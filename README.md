@@ -5,7 +5,7 @@ colorFrom: red
 colorTo: blue
 sdk: static
 pinned: false
-short_description: Japanese-first OpenAI Realtime voice and motion app for Reachy Mini Wireless
+short_description: Japanese Realtime voice and motion for Reachy Mini
 tags:
  - reachy_mini
  - reachy_mini_python_app
