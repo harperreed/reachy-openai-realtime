@@ -41,7 +41,7 @@ cd /tmp/reachy-openai-realtime
 3. The microphone meter rises while a person speaks.
 4. After 800 ms of silence, the input is committed and Reachy responds.
 5. Speaking during Reachy's response stops queued playback.
-6. Reachy uses subtle head and antenna motion while speaking; motion requests such as “nod”, “look right”, or “act surprised” produce gentle bounded motions.
+6. Reachy uses subtle head and antenna motion while speaking; motion requests such as “nod”, “look right”, or “act surprised” produce gentle bounded motions. A selected look direction remains the base pose for speaking, listening, and idle motion until another `look` request changes it.
 7. Listening produces one small nod, not a continuous motor loop.
 8. Stopping the app releases recording, playback, and the motion worker safely.
 

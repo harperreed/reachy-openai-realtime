@@ -26,7 +26,7 @@ It connects the robot directly to OpenAI `gpt-realtime-2.1` for speech-to-speech
 - English by default, with the entire UI and runtime log following the selected language
 - Local far-field voice activity detection tuned for the Wireless ReSpeaker
 - Barge-in: speaking while Reachy responds cancels queued audio and truncates conversation audio correctly
-- Safe semantic motion tools: `look`, `nod`, `shake_head`, `express`, and `stop_motion`
+- Safe semantic motion tools: `look`, `nod`, `shake_head`, `express`, and `stop_motion`; ambient motions preserve the selected look direction
 - Gentle idle motion, one short listening nod, and subtle head/antenna motion while Reachy speaks
 - Optional camera input, disabled by default, sending one still image when speech starts
 - Live connection, microphone, conversation, motion, camera, and Realtime event diagnostics

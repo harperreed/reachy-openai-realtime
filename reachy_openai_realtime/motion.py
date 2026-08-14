@@ -52,41 +52,43 @@ class IdleBreathingMotion:
         start_head: Any,
         start_antennas: list[float],
         *,
+        base_head: Any | None = None,
         interpolation_duration: float = 1.0,
     ) -> None:
         self.start_head = np.asarray(start_head, dtype=np.float64)
         self.start_antennas = np.asarray(start_antennas, dtype=np.float64)
         self.interpolation_duration = interpolation_duration
-        self.neutral_head = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+        self.base_head = np.asarray(
+            base_head
+            if base_head is not None
+            else create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
+            dtype=np.float64,
+        )
         self.neutral_antennas = np.array([-0.1745, 0.1745], dtype=np.float64)
 
-    def evaluate(self, elapsed: float) -> tuple[Any, np.ndarray, float]:
+    def evaluate(self, elapsed: float) -> tuple[Any, np.ndarray, None]:
         if elapsed < self.interpolation_duration:
             progress = max(0.0, elapsed / self.interpolation_duration)
-            head = linear_pose_interpolation(self.start_head, self.neutral_head, progress)
+            head = linear_pose_interpolation(self.start_head, self.base_head, progress)
             antennas = (
                 (1.0 - progress) * self.start_antennas
                 + progress * self.neutral_antennas
             )
-            return head, antennas, 0.0
+            return head, antennas, None
 
         breathing_time = elapsed - self.interpolation_duration
         z_offset = 0.005 * np.sin(2.0 * np.pi * 0.1 * breathing_time)
-        head = create_head_pose(
-            x=0,
-            y=0,
+        offset = create_head_pose(
             z=z_offset,
-            roll=0,
-            pitch=0,
-            yaw=0,
             degrees=True,
             mm=False,
         )
+        head = self.base_head @ offset
         antenna_sway = np.deg2rad(15.0) * np.sin(
             2.0 * np.pi * 0.5 * breathing_time
         )
         antennas = np.array([antenna_sway, -antenna_sway], dtype=np.float64)
-        return head, antennas, 0.0
+        return head, antennas, None
 
 
 class ListeningNodMotion:
@@ -96,6 +98,7 @@ class ListeningNodMotion:
         self,
         start_head: Any,
         *,
+        base_head: Any | None = None,
         interpolation_duration: float = 0.25,
         nod_duration: float = 0.45,
         max_pitch_degrees: float = 4.0,
@@ -104,19 +107,24 @@ class ListeningNodMotion:
         self.interpolation_duration = interpolation_duration
         self.nod_duration = nod_duration
         self.max_pitch_degrees = max_pitch_degrees
-        self.neutral_head = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+        self.base_head = np.asarray(
+            base_head
+            if base_head is not None
+            else create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
+            dtype=np.float64,
+        )
 
     def evaluate(self, elapsed: float) -> Any:
         if elapsed < self.interpolation_duration:
             progress = max(0.0, elapsed / self.interpolation_duration)
-            return linear_pose_interpolation(self.start_head, self.neutral_head, progress)
+            return linear_pose_interpolation(self.start_head, self.base_head, progress)
         nod_time = max(0.0, elapsed - self.interpolation_duration)
         if nod_time >= self.nod_duration:
             pitch = 0.0
         else:
             progress = nod_time / self.nod_duration
             pitch = self.max_pitch_degrees * np.sin(np.pi * progress)
-        return create_head_pose(pitch=pitch, degrees=True)
+        return self.base_head @ create_head_pose(pitch=pitch, degrees=True)
 
     def is_moving(self, elapsed: float) -> bool:
         if elapsed < self.interpolation_duration:
@@ -133,18 +141,24 @@ class SpeakingMotion:
         start_head: Any,
         start_antennas: list[float],
         *,
+        base_head: Any | None = None,
         interpolation_duration: float = 0.3,
     ) -> None:
         self.start_head = np.asarray(start_head, dtype=np.float64)
         self.start_antennas = np.asarray(start_antennas, dtype=np.float64)
         self.interpolation_duration = interpolation_duration
-        self.neutral_head = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+        self.base_head = np.asarray(
+            base_head
+            if base_head is not None
+            else create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
+            dtype=np.float64,
+        )
         self.neutral_antennas = np.deg2rad([-10.0, 10.0])
 
     def evaluate(self, elapsed: float) -> tuple[Any, np.ndarray]:
         if elapsed < self.interpolation_duration:
             progress = max(0.0, elapsed / self.interpolation_duration)
-            head = linear_pose_interpolation(self.start_head, self.neutral_head, progress)
+            head = linear_pose_interpolation(self.start_head, self.base_head, progress)
             antennas = (
                 (1.0 - progress) * self.start_antennas
                 + progress * self.neutral_antennas
@@ -159,7 +173,7 @@ class SpeakingMotion:
         yaw = 2.6 * np.sin(2.0 * np.pi * 0.23 * speaking_time + 0.8)
         roll = 1.2 * np.sin(2.0 * np.pi * 0.31 * speaking_time)
         z_offset = 0.002 * np.sin(2.0 * np.pi * 0.7 * speaking_time)
-        head = create_head_pose(
+        offset = create_head_pose(
             z=z_offset,
             roll=roll,
             pitch=pitch,
@@ -167,6 +181,7 @@ class SpeakingMotion:
             degrees=True,
             mm=False,
         )
+        head = self.base_head @ offset
         left = -10.0 + 5.0 * np.sin(2.0 * np.pi * 0.72 * speaking_time + 0.3)
         right = 10.0 - 5.0 * np.sin(2.0 * np.pi * 0.67 * speaking_time + 1.1)
         return head, np.deg2rad([left, right])
@@ -252,12 +267,14 @@ class MotionController:
         self._listening_was_moving: bool | None = None
         self._speaking_motion: SpeakingMotion | None = None
         self._speaking_started_at: float | None = None
+        self._base_head: np.ndarray | None = None
         self._last_activity_at = time.monotonic()
         self._idle_start_delay = 0.3
         self._idle_period = 1.0 / 30.0
         self._thread = threading.Thread(target=self._worker, name="motion-worker", daemon=True)
 
     def start(self) -> None:
+        self._get_base_head()
         self._thread.start()
 
     def submit(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -355,7 +372,24 @@ class MotionController:
         except queue.Full:
             pass
         self._thread.join(timeout=2.0)
-        self._goto(0, 0, [0, 0], 0.7)
+        self._goto_absolute(0, 0, [0, 0], 0.7)
+
+    def _get_base_head(self) -> np.ndarray:
+        if self._base_head is None:
+            try:
+                self._base_head = np.asarray(
+                    self.robot.get_current_head_pose(), dtype=np.float64
+                ).copy()
+            except Exception:
+                logger.debug("Could not read initial persistent head pose", exc_info=True)
+                self._base_head = np.asarray(
+                    create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
+                    dtype=np.float64,
+                )
+        return self._base_head.copy()
+
+    def _set_base_head(self, head: Any) -> None:
+        self._base_head = np.asarray(head, dtype=np.float64).copy()
 
     def _worker(self) -> None:
         while not self._stop_event.is_set():
@@ -405,7 +439,7 @@ class MotionController:
             self._listening_was_moving = None
             try:
                 self.robot.goto_target(
-                    head=create_head_pose(pitch=0, yaw=0, degrees=True),
+                    head=self._get_base_head(),
                     duration=0.2,
                     body_yaw=None,
                 )
@@ -416,7 +450,7 @@ class MotionController:
             self._speaking_started_at = None
             try:
                 self.robot.goto_target(
-                    head=create_head_pose(pitch=0, yaw=0, degrees=True),
+                    head=self._get_base_head(),
                     antennas=np.deg2rad([-10.0, 10.0]),
                     duration=0.25,
                     body_yaw=None,
@@ -434,7 +468,11 @@ class MotionController:
             except Exception:
                 logger.debug("Could not read pose for speaking motion", exc_info=True)
                 return
-            self._speaking_motion = SpeakingMotion(start_head, start_antennas)
+            self._speaking_motion = SpeakingMotion(
+                start_head,
+                start_antennas,
+                base_head=self._get_base_head(),
+            )
             self._speaking_started_at = now
         try:
             head, antennas = self._speaking_motion.evaluate(now - self._speaking_started_at)
@@ -456,7 +494,10 @@ class MotionController:
             except Exception:
                 logger.debug("Could not read pose for listening nod", exc_info=True)
                 return
-            self._listening_motion = ListeningNodMotion(start_head)
+            self._listening_motion = ListeningNodMotion(
+                start_head,
+                base_head=self._get_base_head(),
+            )
             self._listening_started_at = now
             self._listening_was_moving = None
         try:
@@ -491,7 +532,11 @@ class MotionController:
                 logger.debug("Could not read pose for idle breathing", exc_info=True)
                 self._last_activity_at = now
                 return
-            self._idle_motion = IdleBreathingMotion(start_head, start_antennas)
+            self._idle_motion = IdleBreathingMotion(
+                start_head,
+                start_antennas,
+                base_head=self._get_base_head(),
+            )
             self._idle_started_at = now
 
         try:
@@ -519,21 +564,23 @@ class MotionController:
                 "down": (14, 0),
             }
             pitch, yaw = poses[command.arguments["direction"]]
-            self._goto(pitch, yaw, [0, 0], 0.55)
+            target_head = create_head_pose(pitch=pitch, yaw=yaw, degrees=True)
+            self._goto_head(target_head, [0, 0], 0.55)
+            self._set_base_head(target_head)
         elif command.name == "nod":
             for _ in range(command.arguments["count"]):
                 if self._cancel_event.is_set():
                     break
-                self._goto(13, 0, None, 0.22)
-                self._goto(-5, 0, None, 0.22)
-            self._goto(0, 0, None, 0.3)
+                self._goto_relative(13, 0, None, 0.22)
+                self._goto_relative(-5, 0, None, 0.22)
+            self._goto_relative(0, 0, None, 0.3)
         elif command.name == "shake_head":
             for _ in range(command.arguments["count"]):
                 if self._cancel_event.is_set():
                     break
-                self._goto(0, 15, None, 0.22)
-                self._goto(0, -15, None, 0.22)
-            self._goto(0, 0, None, 0.3)
+                self._goto_relative(0, 15, None, 0.22)
+                self._goto_relative(0, -15, None, 0.22)
+            self._goto_relative(0, 0, None, 0.3)
         elif command.name == "express":
             emotion = command.arguments["emotion"]
             presets = {
@@ -544,9 +591,9 @@ class MotionController:
                 "sad": (10, 0, [-18, 18]),
             }
             pitch, yaw, antennas = presets[emotion]
-            self._goto(pitch, yaw, antennas, 0.55)
+            self._goto_relative(pitch, yaw, antennas, 0.55)
 
-    def _goto(
+    def _goto_absolute(
         self,
         pitch: float,
         yaw: float,
@@ -555,9 +602,33 @@ class MotionController:
     ) -> None:
         if self._cancel_event.is_set() and not self._stop_event.is_set():
             return
+        self._goto_head(
+            create_head_pose(pitch=pitch, yaw=yaw, degrees=True),
+            antennas_deg,
+            duration,
+        )
+
+    def _goto_relative(
+        self,
+        pitch: float,
+        yaw: float,
+        antennas_deg: list[float] | None,
+        duration: float,
+    ) -> None:
+        if self._cancel_event.is_set() and not self._stop_event.is_set():
+            return
+        offset = create_head_pose(pitch=pitch, yaw=yaw, degrees=True)
+        self._goto_head(self._get_base_head() @ offset, antennas_deg, duration)
+
+    def _goto_head(
+        self,
+        head: Any,
+        antennas_deg: list[float] | None,
+        duration: float,
+    ) -> None:
         antennas = np.deg2rad(antennas_deg) if antennas_deg is not None else None
         self.robot.goto_target(
-            head=create_head_pose(pitch=pitch, yaw=yaw, degrees=True),
+            head=head,
             antennas=antennas,
             duration=duration,
             body_yaw=None,
