@@ -16,6 +16,8 @@ tags:
 An open-source, multilingual voice, vision, and motion app for Reachy Mini Wireless.
 It connects the robot directly to OpenAI `gpt-realtime-2.1` for speech-to-speech conversation—without chaining separate speech recognition and text-to-speech services.
 
+[GitHub source](https://github.com/tinjyuu/reachy-openai-realtime) · [Hugging Face Space](https://huggingface.co/spaces/tinjyuu/reachy_openai_realtime)
+
 > This is an independent community project and is not affiliated with or endorsed by OpenAI or Pollen Robotics.
 
 ## Features
