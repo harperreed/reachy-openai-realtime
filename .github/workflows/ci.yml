@@ -17,10 +17,14 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Install Python
         run: uv python install 3.12
-      - name: Install dependencies
-        run: uv sync --extra dev --locked
       - name: Scan for secrets
-        run: uv run python scripts/check_secrets.py
+        run: python scripts/check_secrets.py
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libcairo2-dev libgirepository1.0-dev pkg-config
+      - name: Install Python dependencies
+        run: uv sync --extra dev --locked
       - name: Lint
         run: uv run ruff check .
       - name: Test
