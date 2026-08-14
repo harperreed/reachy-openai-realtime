@@ -29,6 +29,7 @@ It connects the robot directly to OpenAI `gpt-realtime-2.1` for speech-to-speech
 - Safe semantic motion tools: `look`, `nod`, `shake_head`, `express`, and `stop_motion`; ambient motions preserve the selected look direction
 - Gentle idle motion, one short listening nod, and subtle head/antenna motion while Reachy speaks
 - Optional camera input, disabled by default, sending one still image when speech starts
+- Persistent cumulative input/output token totals and a USD estimate from `response.done` usage
 - Live connection, microphone, conversation, motion, camera, and Realtime event diagnostics
 - API key storage outside the package with restrictive filesystem permissions
 
@@ -98,6 +99,8 @@ uv run reachy-mini-app-assistant check .
 ```
 
 The motion layer validates tool names and arguments and maps them to bounded presets. The model never receives raw joint-angle control.
+
+The usage panel starts tracking after this feature is installed. It stores token counters only in the robot's private app configuration directory; it does not store conversation audio or transcripts. The USD amount is an estimate based on the published `gpt-realtime-2.1` rates and should be checked against the OpenAI billing dashboard for the final amount.
 
 ## License
 

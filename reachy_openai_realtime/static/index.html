@@ -31,6 +31,32 @@
         <meter id="mic-meter" min="-80" max="0" low="-55" high="-18" optimum="-30" value="-80"></meter>
       </section>
 
+      <section class="usage-panel" aria-labelledby="usage-title">
+        <div class="section-heading">
+          <h2 id="usage-title" data-i18n="usage_title">API usage</h2>
+          <span class="estimate-label" data-i18n="estimate">ESTIMATE</span>
+        </div>
+        <div class="usage-totals">
+          <div>
+            <span data-i18n="cumulative_tokens">Cumulative tokens</span>
+            <strong id="usage-total-tokens">0</strong>
+          </div>
+          <div>
+            <span data-i18n="estimated_cost">Estimated cost</span>
+            <strong id="usage-estimated-cost">$0.0000</strong>
+          </div>
+        </div>
+        <dl class="usage-breakdown">
+          <div><dt data-i18n="input_tokens">Input tokens</dt><dd id="usage-input-tokens">0</dd></div>
+          <div><dt data-i18n="output_tokens">Output tokens</dt><dd id="usage-output-tokens">0</dd></div>
+          <div><dt data-i18n="cached_input">Cached input</dt><dd id="usage-cached-tokens">0</dd></div>
+          <div><dt data-i18n="responses">Responses</dt><dd id="usage-responses">0</dd></div>
+        </dl>
+        <p id="usage-modalities" class="usage-modalities"></p>
+        <p id="usage-tracking-since" class="notice"></p>
+        <p id="usage-notice" class="notice" data-i18n="usage_notice">Measured from response.done events stored on this robot. The USD estimate uses the model rates configured in this app as of {date} and may differ from the final bill.</p>
+      </section>
+
       <section class="language-panel" aria-labelledby="language-title">
         <div class="section-heading">
           <h2 id="language-title" data-i18n="conversation_language">Conversation language</h2>

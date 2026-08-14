@@ -43,6 +43,8 @@ def test_settings_api_accepts_json_body_and_never_returns_key(tmp_path, monkeypa
     assert "events" in status_response.json()
     assert status_response.json()["mic_dbfs"] is None
     assert status_response.json()["camera_images_sent"] == 0
+    assert status_response.json()["usage"]["lifetime"]["total_tokens"] == 0
+    assert status_response.json()["usage"]["lifetime"]["estimated_cost_usd"] == 0.0
     assert key not in status_response.text
 
     language_response = client.post("/api/config/language", json={"language": "ja"})

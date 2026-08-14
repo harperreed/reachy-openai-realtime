@@ -8,6 +8,7 @@ from reachy_openai_realtime.settings import (
     remove_api_key,
     save_api_key,
     save_language,
+    usage_path,
 )
 
 
@@ -26,6 +27,7 @@ def test_api_key_is_persisted_outside_package(tmp_path, monkeypatch) -> None:
     assert oct(target.parent.stat().st_mode & 0o777) == "0o700"
     assert oct(target.stat().st_mode & 0o777) == "0o600"
     assert os.environ["OPENAI_API_KEY"] == key
+    assert usage_path() == tmp_path / "config" / "usage.json"
 
 
 def test_instance_env_can_be_loaded_and_removed(tmp_path, monkeypatch) -> None:

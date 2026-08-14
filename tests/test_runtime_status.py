@@ -34,3 +34,34 @@ def test_secrets_are_redacted_from_errors_and_events() -> None:
     assert key not in str(snapshot)
     assert "sk-***" in snapshot["last_error"]
     assert key not in safe_message(f"bad {key}")
+
+
+def test_snapshot_includes_cumulative_response_usage() -> None:
+    status = RuntimeStatus()
+    status.record_usage(
+        "gpt-realtime-2.1",
+        {
+            "total_tokens": 30,
+            "input_tokens": 20,
+            "output_tokens": 10,
+            "input_token_details": {
+                "text_tokens": 10,
+                "audio_tokens": 10,
+                "image_tokens": 0,
+                "cached_tokens": 5,
+                "cached_tokens_details": {
+                    "text_tokens": 5,
+                    "audio_tokens": 0,
+                    "image_tokens": 0,
+                },
+            },
+            "output_token_details": {"text_tokens": 4, "audio_tokens": 6},
+        },
+    )
+
+    snapshot = status.snapshot()
+    assert snapshot["usage"]["lifetime"]["total_tokens"] == 30
+    assert snapshot["usage"]["lifetime"]["input_tokens"] == 20
+    assert snapshot["usage"]["lifetime"]["output_tokens"] == 10
+    assert snapshot["usage"]["lifetime"]["estimated_cost_usd"] > 0
+    assert snapshot["events"][0]["key"] == "event_usage_recorded"

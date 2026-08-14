@@ -57,6 +57,55 @@ function formatTime(value) {
     });
 }
 
+function formatDateTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString(i18n.localeFor(selectedLanguage), {
+      dateStyle: "medium", timeStyle: "short",
+    });
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat(i18n.localeFor(selectedLanguage), {
+    maximumFractionDigits: 0,
+  }).format(Number(value || 0));
+}
+
+function formatUsd(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat(i18n.localeFor(selectedLanguage), {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  }).format(value);
+}
+
+function renderUsage(usage) {
+  const lifetime = usage && usage.lifetime ? usage.lifetime : {};
+  document.getElementById("usage-total-tokens").textContent = formatNumber(lifetime.total_tokens);
+  document.getElementById("usage-estimated-cost").textContent = formatUsd(lifetime.estimated_cost_usd);
+  document.getElementById("usage-input-tokens").textContent = formatNumber(lifetime.input_tokens);
+  document.getElementById("usage-output-tokens").textContent = formatNumber(lifetime.output_tokens);
+  document.getElementById("usage-cached-tokens").textContent = formatNumber(lifetime.cached_input_tokens);
+  document.getElementById("usage-responses").textContent = formatNumber(lifetime.responses);
+  document.getElementById("usage-modalities").textContent = t("usage_modalities", {
+    audioIn: formatNumber(lifetime.input_audio_tokens),
+    audioOut: formatNumber(lifetime.output_audio_tokens),
+    textIn: formatNumber(lifetime.input_text_tokens),
+    textOut: formatNumber(lifetime.output_text_tokens),
+    image: formatNumber(lifetime.input_image_tokens),
+  });
+  document.getElementById("usage-tracking-since").textContent = t("usage_tracking_since", {
+    time: formatDateTime(usage && usage.tracking_started_at),
+  });
+  document.getElementById("usage-notice").textContent = t("usage_notice", {
+    date: usage && usage.pricing_as_of ? usage.pricing_as_of : "—",
+  });
+}
+
 function renderConfig(config) {
   const languages = Array.isArray(config.languages) ? config.languages : [];
   if (languages.length) {
@@ -171,6 +220,7 @@ function renderRuntime(status) {
   document.getElementById("last-assistant").textContent = status.last_assistant || t("waiting_response");
   document.getElementById("last-motion").textContent = status.last_motion || "—";
   document.getElementById("updated-at").textContent = formatTime(status.updated_at);
+  renderUsage(status.usage);
 
   const micLevel = typeof status.mic_dbfs === "number" ? status.mic_dbfs : -80;
   document.getElementById("mic-meter").value = micLevel;

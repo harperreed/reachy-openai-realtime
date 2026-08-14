@@ -71,11 +71,23 @@ h1 { margin: 0; font-size: clamp(30px, 8vw, 42px); overflow-wrap: anywhere; }
 .mic-panel strong { color: #d9e2ec; font-family: ui-monospace, monospace; }
 .mic-panel meter { display: block; width: 100%; height: 10px; accent-color: #39bdf8; }
 
-.language-panel, .camera-panel { margin: 0 0 20px; padding: 14px; border: 1px solid #2b333e; border-radius: 14px; background: #11161c; }
+.language-panel, .camera-panel, .usage-panel { margin: 0 0 20px; padding: 14px; border: 1px solid #2b333e; border-radius: 14px; background: #11161c; }
 .language-panel .notice { margin-bottom: 0; }
 .camera-panel button { width: 100%; }
 .camera-panel img { width: 100%; margin-top: 12px; border: 1px solid #343c48; border-radius: 12px; background: #080b0f; }
 .camera-panel .notice { margin-bottom: 0; }
+
+.estimate-label { color: #ffb27e; font-size: 10px; font-weight: 800; letter-spacing: 0.1em; }
+.usage-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.usage-totals > div { min-width: 0; padding: 12px; border: 1px solid #2b333e; border-radius: 12px; background: #0d1218; }
+.usage-totals span { display: block; color: #8e99a8; font-size: 11px; }
+.usage-totals strong { display: block; margin-top: 5px; overflow-wrap: anywhere; color: #f4f6f8; font-family: ui-monospace, monospace; font-size: 20px; }
+.usage-breakdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 14px; margin: 12px 0 0; }
+.usage-breakdown div { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
+.usage-breakdown dt { font-size: 12px; }
+.usage-breakdown dd { font-size: 12px; }
+.usage-modalities { margin: 12px 0 0; color: #aeb7c4; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.usage-panel .notice { margin-bottom: 0; }
 
 .error-panel { margin: 0 0 20px; padding: 13px 15px; border: 1px solid #743f47; border-radius: 12px; color: #ffadb3; background: #2b181c; }
 .error-panel p { margin: 5px 0 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.55; }
@@ -136,4 +148,5 @@ code { color: #d9e2ec; }
 @media (max-width: 480px) {
   body { padding: 12px; }
   .card { padding: 24px 18px; border-radius: 18px; }
+  .usage-totals { grid-template-columns: 1fr; }
 }

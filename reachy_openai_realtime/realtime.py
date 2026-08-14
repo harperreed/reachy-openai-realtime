@@ -710,6 +710,9 @@ class RealtimeRobotSession:
                 response_id_value = getattr(response, "id", None)
                 response_id = str(response_id_value) if response_id_value else None
                 response_status = getattr(response, "status", None)
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    self.status.record_usage(self.config.model, usage)
                 was_interrupted = bool(
                     response_id and response_id in self._interrupted_response_ids
                 )

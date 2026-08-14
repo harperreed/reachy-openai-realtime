@@ -6,6 +6,8 @@ from collections import Counter, deque
 from datetime import datetime, timezone
 from typing import Any
 
+from .usage import UsageTracker
+
 _SECRET_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
 
 
@@ -19,8 +21,9 @@ def safe_message(value: object, limit: int = 400) -> str:
 
 
 class RuntimeStatus:
-    def __init__(self) -> None:
+    def __init__(self, usage_tracker: UsageTracker | None = None) -> None:
         self._lock = threading.Lock()
+        self._usage_tracker = usage_tracker or UsageTracker()
         self._phase = "starting"
         self._detail = "アプリを起動しています"
         self._detail_key = "detail_starting"
@@ -190,6 +193,41 @@ class RuntimeStatus:
             self._response_requests += 1
             self._updated_at = _now()
 
+    def record_usage(self, model: str, usage: object) -> None:
+        recorded = self._usage_tracker.record(model, usage)
+        if recorded is None:
+            return
+        response = recorded["response"]
+        lifetime = recorded["lifetime"]
+        response_cost = response.get("estimated_cost_usd")
+        lifetime_cost = lifetime.get("estimated_cost_usd")
+        with self._lock:
+            self._updated_at = _now()
+            self._append_event_locked(
+                "info",
+                f"API使用量: +{response['total_tokens']}トークン"
+                + (
+                    f"（推定 ${response_cost:.6f} / 累計 ${lifetime_cost:.6f}）"
+                    if response_cost is not None and lifetime_cost is not None
+                    else "（料金推定対象外のモデル）"
+                ),
+                key=(
+                    "event_usage_recorded"
+                    if response_cost is not None and lifetime_cost is not None
+                    else "event_usage_unpriced"
+                ),
+                params={
+                    "tokens": response["total_tokens"],
+                    "cost": (
+                        f"${response_cost:.6f}" if response_cost is not None else "—"
+                    ),
+                    "total": (
+                        f"${lifetime_cost:.6f}" if lifetime_cost is not None else "—"
+                    ),
+                    "model": model,
+                },
+            )
+
     def record_audio_output_received(self) -> None:
         with self._lock:
             self._audio_output_chunks_received += 1
@@ -286,7 +324,7 @@ class RuntimeStatus:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            return {
+            snapshot = {
                 "phase": self._phase,
                 "detail": self._detail,
                 "detail_key": self._detail_key,
@@ -318,6 +356,8 @@ class RuntimeStatus:
                 "updated_at": self._updated_at,
                 "events": list(reversed(self._events)),
             }
+        snapshot["usage"] = self._usage_tracker.snapshot()
+        return snapshot
 
     def _append_event_locked(
         self,

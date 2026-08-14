@@ -37,6 +37,10 @@ def env_path() -> Path:
     return config_dir() / ".env"
 
 
+def usage_path() -> Path:
+    return config_dir() / "usage.json"
+
+
 def _prepare_config_dir() -> Path:
     target_dir = config_dir()
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)

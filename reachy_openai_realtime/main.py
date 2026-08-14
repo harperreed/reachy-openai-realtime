@@ -16,7 +16,14 @@ from .config import AppConfig, language_choices, language_option
 from .motion import MotionController
 from .realtime import RealtimeRobotSession
 from .runtime_status import RuntimeStatus
-from .settings import load_instance_env, remove_api_key, save_api_key, save_language
+from .settings import (
+    load_instance_env,
+    remove_api_key,
+    save_api_key,
+    save_language,
+    usage_path,
+)
+from .usage import UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +59,9 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
         self._reachy_mini: ReachyMini | None = None
         self._camera_lock = threading.Lock()
         self._language_lock = threading.Lock()
-        self._language = AppConfig.from_env().language
-        self.runtime_status = RuntimeStatus()
+        initial_config = AppConfig.from_env()
+        self._language = initial_config.language
+        self.runtime_status = RuntimeStatus(UsageTracker(usage_path()))
 
         assert self.settings_app is not None
 

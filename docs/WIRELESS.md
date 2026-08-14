@@ -44,6 +44,7 @@ cd /tmp/reachy-openai-realtime
 6. Reachy uses subtle head and antenna motion while speaking; motion requests such as “nod”, “look right”, or “act surprised” produce gentle bounded motions. A selected look direction remains the base pose for speaking, listening, and idle motion until another `look` request changes it.
 7. Listening produces one small nod, not a continuous motor loop.
 8. Stopping the app releases recording, playback, and the motion worker safely.
+9. The API usage panel accumulates `response.done` input/output token counts across app restarts and shows an estimated USD cost. Tracking begins when version 0.5.0 or later is installed.
 
 ## 5. Camera
 
