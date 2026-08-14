@@ -23,6 +23,8 @@ class RuntimeStatus:
         self._lock = threading.Lock()
         self._phase = "starting"
         self._detail = "アプリを起動しています"
+        self._detail_key = "detail_starting"
+        self._detail_params: dict[str, Any] = {}
         self._connected = False
         self._last_error: str | None = None
         self._last_user: str | None = None
@@ -48,8 +50,12 @@ class RuntimeStatus:
         self._last_realtime_event: str | None = None
         self._realtime_events: deque[dict[str, str]] = deque(maxlen=100)
         self._updated_at = _now()
-        self._events: deque[dict[str, str]] = deque(maxlen=40)
-        self._append_event_locked("info", "アプリを起動しました")
+        self._events: deque[dict[str, Any]] = deque(maxlen=40)
+        self._append_event_locked(
+            "info",
+            "アプリを起動しました",
+            key="event_app_started",
+        )
 
     def set_phase(
         self,
@@ -58,22 +64,33 @@ class RuntimeStatus:
         *,
         connected: bool | None = None,
         event: bool = False,
+        detail_key: str | None = None,
+        detail_params: dict[str, Any] | None = None,
     ) -> None:
         with self._lock:
             changed = phase != self._phase or detail != self._detail
             self._phase = phase
             self._detail = safe_message(detail)
+            self._detail_key = detail_key
+            self._detail_params = dict(detail_params or {})
             if connected is not None:
                 self._connected = connected
             self._updated_at = _now()
             if event and changed:
-                self._append_event_locked("info", self._detail)
+                self._append_event_locked(
+                    "info",
+                    self._detail,
+                    key=detail_key,
+                    params=detail_params,
+                )
 
     def record_error(self, error: object) -> None:
         message = safe_message(error)
         with self._lock:
             self._phase = "error"
             self._detail = "接続または音声処理でエラーが発生しました"
+            self._detail_key = "detail_error"
+            self._detail_params = {}
             self._connected = False
             self._last_error = message or type(error).__name__
             self._updated_at = _now()
@@ -92,11 +109,18 @@ class RuntimeStatus:
             if role == "user":
                 self._last_user = message
                 label = f"あなた: {message}"
+                key = "event_user_transcript"
             else:
                 self._last_assistant = message
                 label = f"Reachy: {message}"
+                key = "event_assistant_transcript"
             self._updated_at = _now()
-            self._append_event_locked("conversation", label)
+            self._append_event_locked(
+                "conversation",
+                label,
+                key=key,
+                params={"text": message},
+            )
 
     def record_motion(self, name: str, arguments: dict[str, Any], ok: bool) -> None:
         summary = f"{name} {safe_message(arguments, limit=120)}"
@@ -183,6 +207,12 @@ class RuntimeStatus:
             self._append_event_locked(
                 "info",
                 f"割り込み: Reachyの発話を停止しました{suffix}",
+                key=(
+                    "event_interruption_played"
+                    if audio_end_ms is not None
+                    else "event_interruption"
+                ),
+                params={"ms": audio_end_ms} if audio_end_ms is not None else None,
             )
             self._updated_at = _now()
 
@@ -196,6 +226,8 @@ class RuntimeStatus:
             self._append_event_locked(
                 "info",
                 f"発話開始時のカメラ画像をOpenAIへ送信しました（{byte_count // 1024} KiB）",
+                key="event_camera_sent",
+                params={"size": byte_count // 1024},
             )
 
     def record_camera_image_sending(self) -> None:
@@ -204,6 +236,7 @@ class RuntimeStatus:
             self._append_event_locked(
                 "info",
                 "発話を検知。カメラ画像をOpenAIへ送信しています",
+                key="event_camera_sending",
             )
 
     def record_camera_send_error(self, error: object) -> None:
@@ -234,9 +267,21 @@ class RuntimeStatus:
                 self._realtime_events.append({"time": _now(), "type": event_type})
             self._updated_at = _now()
 
-    def add_event(self, message: str, level: str = "info") -> None:
+    def add_event(
+        self,
+        message: str,
+        level: str = "info",
+        *,
+        key: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> None:
         with self._lock:
-            self._append_event_locked(level, safe_message(message))
+            self._append_event_locked(
+                level,
+                safe_message(message),
+                key=key,
+                params=params,
+            )
             self._updated_at = _now()
 
     def snapshot(self) -> dict[str, Any]:
@@ -244,6 +289,8 @@ class RuntimeStatus:
             return {
                 "phase": self._phase,
                 "detail": self._detail,
+                "detail_key": self._detail_key,
+                "detail_params": dict(self._detail_params),
                 "connected": self._connected,
                 "last_error": self._last_error,
                 "last_user": self._last_user,
@@ -272,5 +319,20 @@ class RuntimeStatus:
                 "events": list(reversed(self._events)),
             }
 
-    def _append_event_locked(self, level: str, message: str) -> None:
-        self._events.append({"time": _now(), "level": level, "message": message})
+    def _append_event_locked(
+        self,
+        level: str,
+        message: str,
+        *,
+        key: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> None:
+        event: dict[str, Any] = {
+            "time": _now(),
+            "level": level,
+            "message": message,
+        }
+        if key:
+            event["key"] = key
+            event["params"] = dict(params or {})
+        self._events.append(event)

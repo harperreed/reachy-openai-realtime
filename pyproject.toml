@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reachy_openai_realtime"
-version = "0.3.0"
+version = "0.4.0"
 description = "Multilingual OpenAI Realtime voice, vision, and motion app for Reachy Mini Wireless"
 readme = "README.md"
 requires-python = ">=3.10"

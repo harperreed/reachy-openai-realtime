@@ -109,6 +109,9 @@ class FakeMotion:
     def set_listening_enabled(self, enabled: bool) -> None:
         self.listening_states.append(enabled)
 
+    def set_speaking_enabled(self, enabled: bool) -> None:
+        pass
+
 
 class BargeInAudio:
     def __init__(self) -> None:
@@ -138,6 +141,9 @@ class BargeInMotion:
         pass
 
     def set_listening_enabled(self, enabled: bool) -> None:
+        pass
+
+    def set_speaking_enabled(self, enabled: bool) -> None:
         pass
 
 

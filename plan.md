@@ -20,4 +20,5 @@ Provide low-latency, multilingual speech-to-speech conversation on Reachy Mini W
 - Tool arguments are validated and bounded by the app.
 - User speech cancels queued assistant audio and active conversational motion.
 - Listening motion is a single short nod to avoid motor noise interfering with VAD.
+- Speaking motion uses subtle head and antenna movement only while output audio is playing.
 - Wireless recording is not stopped when motion is cancelled.

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,94 +11,94 @@
       <div class="robot">🤖</div>
       <p class="eyebrow">Reachy Mini Wireless</p>
       <h1>OpenAI Realtime</h1>
-      <p class="lead">会話・接続状況</p>
+      <p class="lead" data-i18n="lead">Conversation &amp; connection status</p>
 
       <section id="status-panel" class="status-panel" aria-live="polite">
         <span id="status-dot" class="status-dot"></span>
         <div>
-          <strong id="status-title">確認中…</strong>
-          <p id="status-detail">ロボットの状態を読み込んでいます</p>
+          <strong id="status-title" data-i18n="loading">Checking…</strong>
+          <p id="status-detail" data-i18n="loading_robot">Loading robot status</p>
         </div>
       </section>
 
       <div class="status-meta">
-        <span id="connection-state" class="pill">○ API未接続</span>
-        <span id="key-state" class="pill">キー確認中</span>
+        <span id="connection-state" class="pill" data-i18n="api_disconnected">○ API disconnected</span>
+        <span id="key-state" class="pill" data-i18n="key_checking">Checking API key</span>
       </div>
 
-      <section class="mic-panel" aria-label="マイク入力レベル">
-        <div><span>マイク入力</span><strong id="mic-level">確認中…</strong></div>
+      <section class="mic-panel" aria-label="Microphone input level" data-i18n-aria-label="mic_aria">
+        <div><span data-i18n="mic_input">Microphone input</span><strong id="mic-level" data-i18n="loading">Checking…</strong></div>
         <meter id="mic-meter" min="-80" max="0" low="-55" high="-18" optimum="-30" value="-80"></meter>
       </section>
 
       <section class="language-panel" aria-labelledby="language-title">
         <div class="section-heading">
-          <h2 id="language-title">会話言語</h2>
+          <h2 id="language-title" data-i18n="conversation_language">Conversation language</h2>
           <span id="language-state" class="pill ready">English</span>
         </div>
-        <label for="language-select">対象言語</label>
+        <label for="language-select" data-i18n="target_language">Language</label>
         <select id="language-select" name="language" disabled>
           <option value="en">English</option>
         </select>
-        <p class="notice">初期値は英語です。変更は次の応答から反映され、再起動後も保持されます。</p>
+        <p class="notice" data-i18n="language_notice">English is the default. Changes apply from the next response and persist after restart.</p>
       </section>
 
       <section class="camera-panel" aria-labelledby="camera-title">
         <div class="section-heading">
-          <h2 id="camera-title">AIカメラ</h2>
-          <span id="camera-state" class="pill">確認中</span>
+          <h2 id="camera-title" data-i18n="ai_camera">AI camera</h2>
+          <span id="camera-state" class="pill" data-i18n="checking">Checking</span>
         </div>
-        <button id="camera-toggle" class="secondary" type="button" disabled>カメラをON</button>
-        <img id="camera-preview" alt="Reachy Miniのカメラプレビュー" hidden />
-        <p id="camera-send-status" class="notice">OpenAI送信: 0枚</p>
-        <p class="notice">初期状態はOFFです。ONにすると、人の発話開始時に静止画を1枚OpenAI Realtime APIへ送信します。</p>
+        <button id="camera-toggle" class="secondary" type="button" disabled data-i18n="camera_on">Turn camera on</button>
+        <img id="camera-preview" alt="Reachy Mini camera preview" data-i18n-alt="camera_preview_alt" hidden />
+        <p id="camera-send-status" class="notice">Sent to OpenAI: 0 images</p>
+        <p class="notice" data-i18n="camera_notice">The camera is off by default. When enabled, one still image is sent to the OpenAI Realtime API when human speech starts.</p>
       </section>
 
       <section id="error-panel" class="error-panel" aria-live="assertive" hidden>
-        <strong>エラー</strong>
+        <strong data-i18n="error">Error</strong>
         <p id="runtime-error"></p>
       </section>
 
       <section class="conversation" aria-labelledby="conversation-title">
         <div class="section-heading">
-          <h2 id="conversation-title">直近の会話</h2>
+          <h2 id="conversation-title" data-i18n="recent_conversation">Recent conversation</h2>
           <span class="live-label">LIVE</span>
         </div>
         <div class="speech user-speech">
-          <span>あなた</span>
-          <p id="last-user">まだ話しかけていません</p>
+          <span data-i18n="you">You</span>
+          <p id="last-user" data-i18n="not_spoken">You haven't spoken yet</p>
         </div>
         <div class="speech reachy-speech">
           <span>Reachy</span>
-          <p id="last-assistant">応答待ちです</p>
+          <p id="last-assistant" data-i18n="waiting_response">Waiting for a response</p>
         </div>
       </section>
 
       <dl class="runtime">
-        <div><dt>モーション</dt><dd id="last-motion">—</dd></div>
-        <div><dt>最終更新</dt><dd id="updated-at">—</dd></div>
-        <div><dt>モデル</dt><dd id="model">—</dd></div>
-        <div><dt>音声</dt><dd id="voice">—</dd></div>
-        <div><dt>会話言語</dt><dd id="language">English</dd></div>
-        <div><dt>アプリ</dt><dd id="app-version">—</dd></div>
+        <div><dt data-i18n="motion">Motion</dt><dd id="last-motion">—</dd></div>
+        <div><dt data-i18n="last_updated">Last updated</dt><dd id="updated-at">—</dd></div>
+        <div><dt data-i18n="model">Model</dt><dd id="model">—</dd></div>
+        <div><dt data-i18n="voice">Voice</dt><dd id="voice">—</dd></div>
+        <div><dt data-i18n="conversation_language">Conversation language</dt><dd id="language">English</dd></div>
+        <div><dt data-i18n="app">App</dt><dd id="app-version">—</dd></div>
       </dl>
 
       <details class="event-panel" open>
-        <summary>動作ログ <span id="event-count">0</span></summary>
+        <summary><span data-i18n="activity_log">Activity log</span> <span id="event-count">0</span></summary>
         <ol id="event-list" class="event-list">
-          <li>ログを読み込んでいます…</li>
+          <li data-i18n="loading_log">Loading log…</li>
         </ol>
       </details>
 
       <details class="event-panel">
-        <summary>診断</summary>
-        <p class="notice">全Realtimeイベント、マイク2ch、DoA人声判定、VAD閾値、送信・commit回数を確認できます。</p>
-        <a class="secondary diagnostic-link" href="/api/diagnostics" target="_blank" rel="noreferrer">診断JSONを開く</a>
-        <button id="copy-diagnostics" class="secondary" type="button">診断ログをコピー</button>
+        <summary data-i18n="diagnostics">Diagnostics</summary>
+        <p class="notice" data-i18n="diagnostics_notice">View all Realtime events, two microphone channels, DoA speech detection, VAD thresholds, and send/commit counts.</p>
+        <a class="secondary diagnostic-link" href="/api/diagnostics" target="_blank" rel="noreferrer" data-i18n="open_diagnostics">Open diagnostics JSON</a>
+        <button id="copy-diagnostics" class="secondary" type="button" data-i18n="copy_diagnostics">Copy diagnostics</button>
       </details>
 
       <details id="settings-panel" class="settings-panel" open>
-        <summary>OpenAI API設定</summary>
+        <summary data-i18n="api_settings">OpenAI API settings</summary>
         <form id="key-form">
           <label for="api-key">OpenAI API Key</label>
           <div class="key-row">
@@ -111,20 +111,18 @@
               required
               minlength="20"
             />
-            <button id="toggle-key" type="button" class="secondary">表示</button>
+            <button id="toggle-key" type="button" class="secondary" data-i18n="show">Show</button>
           </div>
-          <button id="save-button" type="submit">ロボットに保存</button>
+          <button id="save-button" type="submit" data-i18n="save_to_robot">Save to robot</button>
         </form>
 
-        <button id="remove-button" class="danger" type="button">保存済みキーを削除</button>
+        <button id="remove-button" class="danger" type="button" data-i18n="remove_key">Remove saved key</button>
 
-        <p class="notice">
-          キーはこのReachy Mini内の永続的なアプリ設定領域に保存されます。
-          画面やAPIから保存値を読み戻すことはできません。
-        </p>
+        <p class="notice" data-i18n="key_notice">The key is stored in this Reachy Mini's persistent app settings. Its saved value cannot be read back through the UI or API.</p>
         <p id="message" class="message" aria-live="polite"></p>
       </details>
     </main>
+    <script src="/static/i18n.js"></script>
     <script src="/static/main.js"></script>
   </body>
 </html>

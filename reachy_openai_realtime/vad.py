@@ -61,7 +61,10 @@ class EnergyTurnDetector:
                 self._candidate_ms += duration_ms
             else:
                 self._candidate_ms = 0.0
-                if speech_detected is not False:
+                # Explicitly non-speech audio is the best noise-floor sample.
+                # Do not learn from audio that the ReSpeaker classified as a
+                # human voice, otherwise quiet voices raise their own gate.
+                if speech_detected is not True:
                     self._update_noise_floor(level_dbfs, duration_ms)
 
             if self._candidate_ms >= self.min_speech_ms:
@@ -72,7 +75,11 @@ class EnergyTurnDetector:
             return VadDecision()
 
         self._turn_ms += duration_ms
-        if level_dbfs >= self.continue_threshold_dbfs:
+        # The Wireless microphone can keep reporting a high energy level after
+        # the user stops (room noise, fan noise, or residual speaker audio).
+        # Once the ReSpeaker explicitly says the sound is not human speech,
+        # treat it as silence even when that residual energy remains high.
+        if speech_detected is not False and level_dbfs >= self.continue_threshold_dbfs:
             self._silence_ms = 0.0
         else:
             self._silence_ms += duration_ms

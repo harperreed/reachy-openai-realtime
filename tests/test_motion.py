@@ -10,6 +10,7 @@ from reachy_openai_realtime.motion import (
     IdleBreathingMotion,
     ListeningNodMotion,
     MotionController,
+    SpeakingMotion,
 )
 
 
@@ -155,3 +156,33 @@ def test_listening_nod_does_not_send_motor_commands_during_quiet_window() -> Non
 
     assert targets_after_entering_quiet_window == 1
     assert len(robot.targets) == targets_after_entering_quiet_window
+
+
+def test_speaking_motion_is_subtle_and_changes_over_time() -> None:
+    motion = SpeakingMotion(
+        create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
+        [0.0, 0.0],
+        interpolation_duration=0.0,
+    )
+
+    head_a, antennas_a = motion.evaluate(0.0)
+    head_b, antennas_b = motion.evaluate(0.7)
+
+    assert not np.allclose(head_a, head_b)
+    assert not np.allclose(antennas_a, antennas_b)
+    assert np.max(np.abs(antennas_b)) <= np.deg2rad(16.0)
+    assert abs(head_b[2, 3]) <= 0.0021
+
+
+def test_speaking_motion_runs_only_while_enabled() -> None:
+    robot = FakeRobot()
+    controller = MotionController(robot)
+
+    controller.set_speaking_enabled(True)
+    controller._update_ambient_motion()
+    targets_while_speaking = len(robot.targets)
+    assert targets_while_speaking == 1
+
+    controller.set_speaking_enabled(False)
+    controller._update_ambient_motion()
+    assert len(robot.targets) == targets_while_speaking + 1

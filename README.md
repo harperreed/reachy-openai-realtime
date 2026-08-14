@@ -23,11 +23,11 @@ It connects the robot directly to OpenAI `gpt-realtime-2.1` for speech-to-speech
 ## Features
 
 - Speech-to-speech conversations in nine selectable languages
-- English by default, with live language selection in the robot UI
+- English by default, with the entire UI and runtime log following the selected language
 - Local far-field voice activity detection tuned for the Wireless ReSpeaker
 - Barge-in: speaking while Reachy responds cancels queued audio and truncates conversation audio correctly
 - Safe semantic motion tools: `look`, `nod`, `shake_head`, `express`, and `stop_motion`
-- Gentle idle motion and one short listening nod when speech begins
+- Gentle idle motion, one short listening nod, and subtle head/antenna motion while Reachy speaks
 - Optional camera input, disabled by default, sending one still image when speech starts
 - Live connection, microphone, conversation, motion, camera, and Realtime event diagnostics
 - API key storage outside the package with restrictive filesystem permissions
@@ -46,7 +46,7 @@ English is the default. The management UI can switch the next response to:
 - Italiano
 - Português
 
-The language selection is persisted on the robot. The app supplies the selected language through Realtime session and response instructions, following OpenAI's documented session configuration flow.
+The language selection is persisted on the robot. It changes the full management UI immediately—including status details and activity logs—and changes the spoken conversation from the next response. The app supplies the selected language through Realtime session and response instructions, following OpenAI's documented session configuration flow.
 
 ## Install on Reachy Mini Wireless
 

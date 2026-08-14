@@ -147,7 +147,15 @@ class RealtimeRobotSession:
                 label = "Realtime APIへ接続しています"
                 if attempt > 1:
                     label = f"Realtime APIへ再接続しています（{attempt}/{self.config.reconnect_attempts}）"
-                self.status.set_phase("connecting", label, connected=False, event=True)
+                self.status.set_phase(
+                    "connecting",
+                    label,
+                    connected=False,
+                    event=True,
+                    detail_key=(
+                        "detail_connecting" if attempt == 1 else "detail_reconnecting"
+                    ),
+                )
                 await self._run_connection(stop_event)
                 return
             except asyncio.CancelledError:
@@ -162,6 +170,7 @@ class RealtimeRobotSession:
                         f"{2 ** (attempt - 1)}秒後に再接続します",
                         connected=False,
                         event=True,
+                        detail_key="detail_reconnecting",
                     )
                     await asyncio.sleep(2 ** (attempt - 1))
         if last_error is not None:
@@ -194,13 +203,20 @@ class RealtimeRobotSession:
                     self._doa_poller.close()
                     self._doa_poller = None
                 self.motion.set_listening_enabled(False)
+                self.motion.set_speaking_enabled(False)
                 self.motion.set_idle_enabled(False)
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 self.connection = None
                 if not stop_event.is_set():
-                    self.status.set_phase("disconnected", "Realtime接続が切れました", connected=False, event=True)
+                    self.status.set_phase(
+                        "disconnected",
+                        "Realtime接続が切れました",
+                        connected=False,
+                        event=True,
+                        detail_key="detail_disconnected",
+                    )
 
     def _session_config(self) -> RealtimeSessionCreateRequestParam:
         pcm24: Any = {"type": "audio/pcm", "rate": 24_000}
@@ -243,6 +259,9 @@ class RealtimeRobotSession:
         prefix = "接続済み。" if connected else ""
         return f"{prefix}{language.label}で話しかけてください"
 
+    def _listening_params(self) -> dict[str, str]:
+        return {"language": language_option(self._current_language()).label}
+
     async def _record_loop(self, stop_event: Any) -> None:
         source_rate = self.robot.media.get_input_audio_samplerate()
         microphone_ready = False
@@ -268,7 +287,11 @@ class RealtimeRobotSession:
                 continue
             if not microphone_ready:
                 microphone_ready = True
-                self.status.add_event(f"マイク入力を開始しました（{source_rate} Hz）")
+                self.status.add_event(
+                    f"マイク入力を開始しました（{source_rate} Hz）",
+                    key="event_mic_started",
+                    params={"rate": source_rate},
+                )
             mono, selected_channel, channel_levels = select_mono_float32(sample)
             dbfs = audio_level_dbfs(mono)
             now = time.monotonic()
@@ -287,11 +310,14 @@ class RealtimeRobotSession:
                 and not self._vad.speech_active
                 and now >= self._speaker_busy_until
             ):
+                self.motion.set_speaking_enabled(False)
                 self.motion.set_idle_enabled(True)
                 self.status.set_phase(
                     "listening",
                     self._listening_detail(),
                     connected=True,
+                    detail_key="detail_listening",
+                    detail_params=self._listening_params(),
                 )
             assistant_audio_active = self._assistant_audio_active(now)
             can_listen = self._input_enabled or assistant_audio_active
@@ -317,7 +343,12 @@ class RealtimeRobotSession:
             ):
                 signal_detected = True
                 self.status.add_event(
-                    f"マイクの音声信号を検出しました（ch{selected_channel + 1}: {dbfs:.1f} dBFS）"
+                    f"マイクの音声信号を検出しました（ch{selected_channel + 1}: {dbfs:.1f} dBFS）",
+                    key="event_signal_detected",
+                    params={
+                        "channel": selected_channel + 1,
+                        "dbfs": f"{dbfs:.1f}",
+                    },
                 )
             audio = resample_linear(mono, source_rate, self.config.input_rate)
             encoded = base64.b64encode(float32_to_pcm16(audio).tobytes()).decode("ascii")
@@ -365,10 +396,16 @@ class RealtimeRobotSession:
                     "音声を聞いています",
                     connected=True,
                     event=True,
+                    detail_key="detail_user_speaking",
                 )
                 self.status.add_event(
                     "ローカル音声判定: 発話開始 "
-                    f"（{dbfs:.1f} dBFS / 閾値 {self._vad.start_threshold_dbfs:.1f} dBFS）"
+                    f"（{dbfs:.1f} dBFS / 閾値 {self._vad.start_threshold_dbfs:.1f} dBFS）",
+                    key="event_local_speech_started",
+                    params={
+                        "dbfs": f"{dbfs:.1f}",
+                        "threshold": f"{self._vad.start_threshold_dbfs:.1f}",
+                    },
                 )
                 for buffered, _ in pre_roll:
                     await self._append_input_audio(buffered)
@@ -389,11 +426,17 @@ class RealtimeRobotSession:
                     True,
                 )
                 reason = "無音800ms" if decision.reason == "silence" else "発話上限20秒"
+                detail_key = (
+                    "detail_turn_silence"
+                    if decision.reason == "silence"
+                    else "detail_turn_maximum"
+                )
                 self.status.set_phase(
                     "thinking",
                     f"発話を確定しました（{reason}）",
                     connected=True,
                     event=True,
+                    detail_key=detail_key,
                 )
                 # Ensure the image item is in the conversation before the audio
                 # message is committed and response generation starts.
@@ -543,8 +586,11 @@ class RealtimeRobotSession:
             try:
                 sample = await asyncio.wait_for(self._playback_queue.get(), timeout=0.25)
             except asyncio.TimeoutError:
+                if not self._assistant_audio_active():
+                    self.motion.set_speaking_enabled(False)
                 continue
             audio = resample_linear(sample, self.config.output_rate, target_rate)
+            self.motion.set_speaking_enabled(True)
             async with self._playback_io_lock:
                 await asyncio.to_thread(self.robot.media.push_audio_sample, audio)
                 if self._playback_started_at is None:
@@ -567,6 +613,8 @@ class RealtimeRobotSession:
                     + "（ロボット側で無音800msを判定）",
                     connected=True,
                     event=True,
+                    detail_key="detail_listening_connected",
+                    detail_params=self._listening_params(),
                 )
                 if not self._greeting_sent:
                     self._greeting_sent = True
@@ -587,6 +635,7 @@ class RealtimeRobotSession:
                     "音声を聞いています",
                     connected=True,
                     event=True,
+                    detail_key="detail_user_speaking",
                 )
             elif event_type == "input_audio_buffer.speech_stopped":
                 self.status.set_phase(
@@ -594,6 +643,7 @@ class RealtimeRobotSession:
                     "無音を検出。発話を理解しています",
                     connected=True,
                     event=True,
+                    detail_key="detail_understanding",
                 )
             elif event_type in {"conversation.item.added", "conversation.item.created"}:
                 await self._confirm_camera_item(event)
@@ -604,6 +654,7 @@ class RealtimeRobotSession:
                         self._camera_delete_events.pop(event_id, None)
             elif event_type == "response.created":
                 self.motion.set_listening_enabled(False)
+                self.motion.set_speaking_enabled(False)
                 self.motion.set_idle_enabled(False)
                 self._response_active = True
                 self._input_enabled = False
@@ -619,6 +670,7 @@ class RealtimeRobotSession:
                     "応答を生成しています",
                     connected=True,
                     event=True,
+                    detail_key="detail_responding",
                 )
             elif event_type == "response.output_audio.delta":
                 response_id = str(event.response_id)
@@ -635,6 +687,7 @@ class RealtimeRobotSession:
                     "assistant_speaking",
                     "Reachyが話しています",
                     connected=True,
+                    detail_key="detail_assistant_speaking",
                 )
                 try:
                     self._playback_queue.put_nowait(pcm16_to_float32(pcm))
@@ -669,6 +722,7 @@ class RealtimeRobotSession:
                             "user_speaking",
                             "音声を聞いています",
                             connected=True,
+                            detail_key="detail_user_speaking",
                         )
                 else:
                     has_tool_outputs = bool(self._pending_tool_outputs)
@@ -682,13 +736,17 @@ class RealtimeRobotSession:
                                 "assistant_speaking",
                                 "Reachyが話しています（割り込み可能）",
                                 connected=True,
+                                detail_key="detail_assistant_interruptible",
                             )
                         else:
+                            self.motion.set_speaking_enabled(False)
                             self.status.set_phase(
                                 "listening",
                                 self._listening_detail(),
                                 connected=True,
                                 event=True,
+                                detail_key="detail_listening",
+                                detail_params=self._listening_params(),
                             )
                 if response_status and response_status not in {"completed", "cancelled"}:
                     details = getattr(response, "status_details", response_status)

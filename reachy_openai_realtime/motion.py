@@ -125,6 +125,53 @@ class ListeningNodMotion:
         return nod_time < self.nod_duration
 
 
+class SpeakingMotion:
+    """Subtle continuous head and antenna motion while Reachy speaks."""
+
+    def __init__(
+        self,
+        start_head: Any,
+        start_antennas: list[float],
+        *,
+        interpolation_duration: float = 0.3,
+    ) -> None:
+        self.start_head = np.asarray(start_head, dtype=np.float64)
+        self.start_antennas = np.asarray(start_antennas, dtype=np.float64)
+        self.interpolation_duration = interpolation_duration
+        self.neutral_head = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+        self.neutral_antennas = np.deg2rad([-10.0, 10.0])
+
+    def evaluate(self, elapsed: float) -> tuple[Any, np.ndarray]:
+        if elapsed < self.interpolation_duration:
+            progress = max(0.0, elapsed / self.interpolation_duration)
+            head = linear_pose_interpolation(self.start_head, self.neutral_head, progress)
+            antennas = (
+                (1.0 - progress) * self.start_antennas
+                + progress * self.neutral_antennas
+            )
+            return head, antennas
+
+        speaking_time = elapsed - self.interpolation_duration
+        pitch = (
+            1.8 * np.sin(2.0 * np.pi * 0.55 * speaking_time)
+            + 0.6 * np.sin(2.0 * np.pi * 1.1 * speaking_time + 0.4)
+        )
+        yaw = 2.6 * np.sin(2.0 * np.pi * 0.23 * speaking_time + 0.8)
+        roll = 1.2 * np.sin(2.0 * np.pi * 0.31 * speaking_time)
+        z_offset = 0.002 * np.sin(2.0 * np.pi * 0.7 * speaking_time)
+        head = create_head_pose(
+            z=z_offset,
+            roll=roll,
+            pitch=pitch,
+            yaw=yaw,
+            degrees=True,
+            mm=False,
+        )
+        left = -10.0 + 5.0 * np.sin(2.0 * np.pi * 0.72 * speaking_time + 0.3)
+        right = 10.0 - 5.0 * np.sin(2.0 * np.pi * 0.67 * speaking_time + 1.1)
+        return head, np.deg2rad([left, right])
+
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -197,11 +244,14 @@ class MotionController:
         self._cancel_event = threading.Event()
         self._idle_enabled = threading.Event()
         self._listening_enabled = threading.Event()
+        self._speaking_enabled = threading.Event()
         self._idle_motion: IdleBreathingMotion | None = None
         self._idle_started_at: float | None = None
         self._listening_motion: ListeningNodMotion | None = None
         self._listening_started_at: float | None = None
         self._listening_was_moving: bool | None = None
+        self._speaking_motion: SpeakingMotion | None = None
+        self._speaking_started_at: float | None = None
         self._last_activity_at = time.monotonic()
         self._idle_start_delay = 0.3
         self._idle_period = 1.0 / 30.0
@@ -212,6 +262,7 @@ class MotionController:
 
     def submit(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.set_listening_enabled(False)
+        self.set_speaking_enabled(False)
         self.set_idle_enabled(False)
         command = self.validate(name, arguments)
         if name == "stop_motion":
@@ -224,14 +275,26 @@ class MotionController:
         return {"ok": True, "motion": name, "arguments": command.arguments}
 
     def set_listening_enabled(self, enabled: bool) -> None:
-        """Loop a restrained nod while human speech is actively detected."""
+        """Run one restrained nod when human speech starts."""
         if enabled:
             if self._listening_enabled.is_set():
                 return
+            self._speaking_enabled.clear()
             self.stop_current()
             self._listening_enabled.set()
         else:
             self._listening_enabled.clear()
+
+    def set_speaking_enabled(self, enabled: bool) -> None:
+        """Animate subtly only while assistant audio is being played."""
+        if enabled:
+            if self._speaking_enabled.is_set():
+                return
+            self._idle_enabled.clear()
+            self._listening_enabled.clear()
+            self._speaking_enabled.set()
+        else:
+            self._speaking_enabled.clear()
 
     def set_idle_enabled(self, enabled: bool) -> None:
         """Allow subtle breathing only while the conversation is waiting."""
@@ -270,6 +333,7 @@ class MotionController:
     def stop_current(self) -> None:
         self.set_idle_enabled(False)
         self._listening_enabled.clear()
+        self._speaking_enabled.clear()
         self._cancel_event.set()
         while True:
             try:
@@ -308,6 +372,8 @@ class MotionController:
             self._listening_motion = None
             self._listening_started_at = None
             self._listening_was_moving = None
+            self._speaking_motion = None
+            self._speaking_started_at = None
             self._cancel_event.clear()
             try:
                 self._execute(command)
@@ -321,7 +387,17 @@ class MotionController:
         if self._listening_enabled.is_set():
             self._idle_motion = None
             self._idle_started_at = None
+            self._speaking_motion = None
+            self._speaking_started_at = None
             self._update_listening_motion()
+            return
+        if self._speaking_enabled.is_set():
+            self._idle_motion = None
+            self._idle_started_at = None
+            self._listening_motion = None
+            self._listening_started_at = None
+            self._listening_was_moving = None
+            self._update_speaking_motion()
             return
         if self._listening_motion is not None:
             self._listening_motion = None
@@ -335,7 +411,42 @@ class MotionController:
                 )
             except Exception:
                 logger.debug("Could not return from listening nod", exc_info=True)
+        if self._speaking_motion is not None:
+            self._speaking_motion = None
+            self._speaking_started_at = None
+            try:
+                self.robot.goto_target(
+                    head=create_head_pose(pitch=0, yaw=0, degrees=True),
+                    antennas=np.deg2rad([-10.0, 10.0]),
+                    duration=0.25,
+                    body_yaw=None,
+                )
+            except Exception:
+                logger.debug("Could not return from speaking motion", exc_info=True)
         self._update_idle_motion()
+
+    def _update_speaking_motion(self) -> None:
+        now = time.monotonic()
+        if self._speaking_motion is None or self._speaking_started_at is None:
+            try:
+                start_head = self.robot.get_current_head_pose()
+                _, start_antennas = self.robot.get_current_joint_positions()
+            except Exception:
+                logger.debug("Could not read pose for speaking motion", exc_info=True)
+                return
+            self._speaking_motion = SpeakingMotion(start_head, start_antennas)
+            self._speaking_started_at = now
+        try:
+            head, antennas = self._speaking_motion.evaluate(now - self._speaking_started_at)
+            self.robot.set_target(
+                head=head,
+                antennas=antennas,
+                body_yaw=None,
+            )
+        except Exception:
+            logger.debug("Speaking motion command failed", exc_info=True)
+            self._speaking_motion = None
+            self._speaking_started_at = None
 
     def _update_listening_motion(self) -> None:
         now = time.monotonic()

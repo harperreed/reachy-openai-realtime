@@ -110,7 +110,9 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             with self._language_lock:
                 self._language = selected.code
             self.runtime_status.add_event(
-                f"会話言語を{selected.label}に変更しました（次の応答から反映）"
+                f"会話言語を{selected.label}に変更しました（次の応答から反映）",
+                key="language_changed",
+                params={"language": selected.label},
             )
             return {
                 "language": selected.code,
@@ -129,10 +131,14 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 self._camera_enabled = update.enabled
             if update.enabled:
                 self.runtime_status.add_event(
-                    "AIカメラをONにしました（発話開始時に画像をOpenAIへ送信）"
+                    "AIカメラをONにしました（発話開始時に画像をOpenAIへ送信）",
+                    key="event_camera_on",
                 )
             else:
-                self.runtime_status.add_event("AIカメラをOFFにしました")
+                self.runtime_status.add_event(
+                    "AIカメラをOFFにしました",
+                    key="event_camera_off",
+                )
             return {
                 "camera_available": self._camera_available,
                 "camera_enabled": self._camera_enabled,
@@ -219,9 +225,15 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             self._camera_available = reachy_mini.media.camera is not None
             self._camera_enabled = False
         if self._camera_available:
-            self.runtime_status.add_event("カメラを検出しました（AIカメラは初期OFF）")
+            self.runtime_status.add_event(
+                "カメラを検出しました（AIカメラは初期OFF）",
+                key="event_camera_detected",
+            )
         else:
-            self.runtime_status.add_event("カメラは利用できません")
+            self.runtime_status.add_event(
+                "カメラは利用できません",
+                key="event_camera_unavailable",
+            )
         if not os.getenv("OPENAI_API_KEY"):
             logger.warning("Open the app settings page and enter OPENAI_API_KEY")
             self.runtime_status.set_phase(
@@ -229,26 +241,48 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 "OpenAI APIキーを設定してください",
                 connected=False,
                 event=True,
+                detail_key="detail_waiting_key",
             )
         while not os.getenv("OPENAI_API_KEY") and not stop_event.is_set():
             time.sleep(0.25)
         if stop_event.is_set():
-            self.runtime_status.set_phase("stopped", "停止しました", connected=False)
+            self.runtime_status.set_phase(
+                "stopped",
+                "停止しました",
+                connected=False,
+                detail_key="detail_stopped",
+            )
             return
 
         motion = MotionController(reachy_mini)
 
         self._session_started = True
-        self.runtime_status.set_phase("starting_audio", "マイクとスピーカーを準備しています", event=True)
+        self.runtime_status.set_phase(
+            "starting_audio",
+            "マイクとスピーカーを準備しています",
+            event=True,
+            detail_key="detail_starting_audio",
+        )
         motion.start()
         reachy_mini.media.start_recording()
         reachy_mini.media.start_playing()
         audio_started_at = time.monotonic()
-        self.runtime_status.set_phase("tuning_audio", "Wirelessマイクを調整しています", event=True)
+        self.runtime_status.set_phase(
+            "tuning_audio",
+            "Wirelessマイクを調整しています",
+            event=True,
+            detail_key="detail_tuning_audio",
+        )
         if apply_wireless_conversation_audio_config(reachy_mini):
-            self.runtime_status.add_event("Reachy会話用のマイク設定を適用しました")
+            self.runtime_status.add_event(
+                "Reachy会話用のマイク設定を適用しました",
+                key="event_mic_config_applied",
+            )
         else:
-            self.runtime_status.add_event("現在のマイク設定で開始します")
+            self.runtime_status.add_event(
+                "現在のマイク設定で開始します",
+                key="event_mic_config_current",
+            )
         warmup_remaining = 1.0 - (time.monotonic() - audio_started_at)
         if warmup_remaining > 0:
             time.sleep(warmup_remaining)
@@ -276,6 +310,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                         "Realtimeセッションを再起動しています",
                         connected=False,
                         event=True,
+                        detail_key="detail_reconnecting",
                     )
         finally:
             try:
@@ -288,7 +323,13 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     self._camera_available = False
                     self._reachy_mini = None
                 self._session_started = False
-                self.runtime_status.set_phase("stopped", "アプリを停止しました", connected=False, event=True)
+                self.runtime_status.set_phase(
+                    "stopped",
+                    "アプリを停止しました",
+                    connected=False,
+                    event=True,
+                    detail_key="detail_stopped",
+                )
 
 
 if __name__ == "__main__":

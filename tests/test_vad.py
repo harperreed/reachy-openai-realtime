@@ -46,6 +46,7 @@ def test_hardware_speech_gate_rejects_loud_motor_noise() -> None:
 
     assert not any(decision.started for decision in decisions)
     assert not vad.speech_active
+    assert vad.noise_floor_dbfs > -40.0
 
 
 def test_hardware_speech_gate_accepts_human_voice() -> None:
@@ -57,6 +58,38 @@ def test_hardware_speech_gate_accepts_human_voice() -> None:
 
     assert decisions[-1].started
     assert vad.speech_active
+
+
+def test_hardware_speech_gate_ends_turn_despite_loud_residual_noise() -> None:
+    vad = EnergyTurnDetector()
+
+    decisions = [
+        vad.process(-35.0, 20.0, speech_detected=True) for _ in range(12)
+    ]
+    assert decisions[-1].started
+
+    # Energy alone is still above the continuation threshold, but the
+    # ReSpeaker no longer classifies it as human speech.
+    decisions = [
+        vad.process(-35.0, 20.0, speech_detected=False) for _ in range(40)
+    ]
+
+    assert decisions[-1].stopped
+    assert decisions[-1].reason == "silence"
+    assert not vad.speech_active
+
+
+def test_non_speech_ambient_noise_adapts_gate_for_quieter_room() -> None:
+    vad = EnergyTurnDetector()
+
+    for _ in range(200):
+        vad.process(-64.0, 20.0, speech_detected=False)
+
+    assert vad.noise_floor_dbfs < -60.0
+    decisions = [
+        vad.process(-54.0, 20.0, speech_detected=True) for _ in range(12)
+    ]
+    assert decisions[-1].started
 
 
 def test_energy_vad_forces_a_maximum_turn() -> None:
