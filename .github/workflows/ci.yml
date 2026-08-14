@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Scan for secrets
+        run: python scripts/check_secrets.py
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            gir1.2-gst-plugins-base-1.0 \
+            gir1.2-gstreamer-1.0 \
+            libcairo2-dev \
+            libgirepository1.0-dev \
+            pkg-config
+      - name: Install Python dependencies
+        run: uv sync --extra dev --locked
+      - name: Lint
+        run: uv run ruff check .
+      - name: Test
+        run: uv run pytest -q
