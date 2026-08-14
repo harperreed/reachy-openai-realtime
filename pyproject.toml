@@ -4,20 +4,32 @@ build-backend = "setuptools.build_meta"
 
 
 [project]
-name = "reachy_japanese_realtime"
-version = "0.1.0"
-description = "Japanese-first OpenAI Realtime voice and motion app for Reachy Mini Wireless"
+name = "reachy_openai_realtime"
+version = "0.3.0"
+description = "Multilingual OpenAI Realtime voice, vision, and motion app for Reachy Mini Wireless"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
 dependencies = [
     "numpy>=2.0",
     "openai>=2.26.0",
+    "python-dotenv>=1.0",
     "reachy-mini>=1.8.0",
 ]
 keywords = ["reachy-mini-app"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
 
 [project.entry-points."reachy_mini_apps"]
-reachy_japanese_realtime = "reachy_japanese_realtime.main:ReachyJapaneseRealtime"
+reachy_openai_realtime = "reachy_openai_realtime.main:ReachyOpenaiRealtime"
+
+[project.urls]
+Homepage = "https://github.com/tinjyuu/reachy-openai-realtime"
+Repository = "https://github.com/tinjyuu/reachy-openai-realtime"
+Issues = "https://github.com/tinjyuu/reachy-openai-realtime/issues"
 
 [tool.setuptools]
 package-dir = { "" = "." }
@@ -27,7 +39,7 @@ include-package-data = true
 where = ["."]
 
 [tool.setuptools.package-data]
-reachy_japanese_realtime = ["**/*"] # Also include all non-.py files
+reachy_openai_realtime = ["**/*"] # Also include all non-.py files
 
 [project.optional-dependencies]
 dev = [

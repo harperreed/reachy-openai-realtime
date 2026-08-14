@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reachy Mini OpenAI Realtime</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="card">
+      <div class="robot">🤖</div>
+      <p class="eyebrow">Reachy Mini Wireless</p>
+      <h1>OpenAI Realtime</h1>
+      <p class="lead">会話・接続状況</p>
+
+      <section id="status-panel" class="status-panel" aria-live="polite">
+        <span id="status-dot" class="status-dot"></span>
+        <div>
+          <strong id="status-title">確認中…</strong>
+          <p id="status-detail">ロボットの状態を読み込んでいます</p>
+        </div>
+      </section>
+
+      <div class="status-meta">
+        <span id="connection-state" class="pill">○ API未接続</span>
+        <span id="key-state" class="pill">キー確認中</span>
+      </div>
+
+      <section class="mic-panel" aria-label="マイク入力レベル">
+        <div><span>マイク入力</span><strong id="mic-level">確認中…</strong></div>
+        <meter id="mic-meter" min="-80" max="0" low="-55" high="-18" optimum="-30" value="-80"></meter>
+      </section>
+
+      <section class="language-panel" aria-labelledby="language-title">
+        <div class="section-heading">
+          <h2 id="language-title">会話言語</h2>
+          <span id="language-state" class="pill ready">English</span>
+        </div>
+        <label for="language-select">対象言語</label>
+        <select id="language-select" name="language" disabled>
+          <option value="en">English</option>
+        </select>
+        <p class="notice">初期値は英語です。変更は次の応答から反映され、再起動後も保持されます。</p>
+      </section>
+
+      <section class="camera-panel" aria-labelledby="camera-title">
+        <div class="section-heading">
+          <h2 id="camera-title">AIカメラ</h2>
+          <span id="camera-state" class="pill">確認中</span>
+        </div>
+        <button id="camera-toggle" class="secondary" type="button" disabled>カメラをON</button>
+        <img id="camera-preview" alt="Reachy Miniのカメラプレビュー" hidden />
+        <p id="camera-send-status" class="notice">OpenAI送信: 0枚</p>
+        <p class="notice">初期状態はOFFです。ONにすると、人の発話開始時に静止画を1枚OpenAI Realtime APIへ送信します。</p>
+      </section>
+
+      <section id="error-panel" class="error-panel" aria-live="assertive" hidden>
+        <strong>エラー</strong>
+        <p id="runtime-error"></p>
+      </section>
+
+      <section class="conversation" aria-labelledby="conversation-title">
+        <div class="section-heading">
+          <h2 id="conversation-title">直近の会話</h2>
+          <span class="live-label">LIVE</span>
+        </div>
+        <div class="speech user-speech">
+          <span>あなた</span>
+          <p id="last-user">まだ話しかけていません</p>
+        </div>
+        <div class="speech reachy-speech">
+          <span>Reachy</span>
+          <p id="last-assistant">応答待ちです</p>
+        </div>
+      </section>
+
+      <dl class="runtime">
+        <div><dt>モーション</dt><dd id="last-motion">—</dd></div>
+        <div><dt>最終更新</dt><dd id="updated-at">—</dd></div>
+        <div><dt>モデル</dt><dd id="model">—</dd></div>
+        <div><dt>音声</dt><dd id="voice">—</dd></div>
+        <div><dt>会話言語</dt><dd id="language">English</dd></div>
+        <div><dt>アプリ</dt><dd id="app-version">—</dd></div>
+      </dl>
+
+      <details class="event-panel" open>
+        <summary>動作ログ <span id="event-count">0</span></summary>
+        <ol id="event-list" class="event-list">
+          <li>ログを読み込んでいます…</li>
+        </ol>
+      </details>
+
+      <details class="event-panel">
+        <summary>診断</summary>
+        <p class="notice">全Realtimeイベント、マイク2ch、DoA人声判定、VAD閾値、送信・commit回数を確認できます。</p>
+        <a class="secondary diagnostic-link" href="/api/diagnostics" target="_blank" rel="noreferrer">診断JSONを開く</a>
+        <button id="copy-diagnostics" class="secondary" type="button">診断ログをコピー</button>
+      </details>
+
+      <details id="settings-panel" class="settings-panel" open>
+        <summary>OpenAI API設定</summary>
+        <form id="key-form">
+          <label for="api-key">OpenAI API Key</label>
+          <div class="key-row">
+            <input
+              id="api-key"
+              name="api-key"
+              type="password"
+              autocomplete="off"
+              placeholder="sk-…"
+              required
+              minlength="20"
+            />
+            <button id="toggle-key" type="button" class="secondary">表示</button>
+          </div>
+          <button id="save-button" type="submit">ロボットに保存</button>
+        </form>
+
+        <button id="remove-button" class="danger" type="button">保存済みキーを削除</button>
+
+        <p class="notice">
+          キーはこのReachy Mini内の永続的なアプリ設定領域に保存されます。
+          画面やAPIから保存値を読み戻すことはできません。
+        </p>
+        <p id="message" class="message" aria-live="polite"></p>
+      </details>
+    </main>
+    <script src="/static/main.js"></script>
+  </body>
+</html>
