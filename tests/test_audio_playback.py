@@ -98,9 +98,16 @@ def test_speaker_worker_writes_in_order_and_reports_writes() -> None:
 
 
 def test_speaker_worker_submit_false_when_inbox_wedged() -> None:
+    import threading as _threading
+
+    # _released lets close() unblock the wedged write so join() succeeds within
+    # its 2 s timeout; without this, the OS thread would sleep for 10 s after the
+    # test ends, poisoning the thread-name checks in later tests.
+    _released = _threading.Event()
+
     class WedgedMedia:
         def push_audio_sample(self, data: np.ndarray) -> None:
-            time.sleep(10.0)
+            _released.wait(timeout=10.0)
 
     worker = SpeakerWorker(WedgedMedia(), inbox_max=1)
     worker.start()
@@ -110,6 +117,7 @@ def test_speaker_worker_submit_false_when_inbox_wedged() -> None:
         assert worker.submit(pcm, 20.0, time.monotonic(), timeout_seconds=0.2) is True  # queued
         assert worker.submit(pcm, 20.0, time.monotonic(), timeout_seconds=0.2) is False  # wedged
     finally:
+        _released.set()   # unblock the wedged write before joining
         worker.close()
 
 
