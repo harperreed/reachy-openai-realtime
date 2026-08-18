@@ -41,6 +41,10 @@ from .motion import TOOL_DEFINITIONS, MotionController
 from .runtime_status import RuntimeStatus, safe_message
 from .session.fsm import SessionState, SessionStateMachine
 from .session.recovery import BackoffPolicy, ErrorClass, SessionOutcome, classify_connection_error
+from .session.supervisor import (
+    FSM_INACTIVITY_LIMIT_SECONDS,
+    SUPERVISOR_POLL_SECONDS,
+)
 from .session.watchdog import DeadlineWatchdog, WatchdogTimeout
 from .vad import EnergyTurnDetector
 
@@ -179,6 +183,7 @@ class RealtimeRobotSession:
         self._doa_poller: DoAPoller | None = None
         self._vad = EnergyTurnDetector()
         self.watchdog = DeadlineWatchdog()
+        self._last_fsm_transition_at = time.monotonic()
         self._mic_ladder = AudioRecoveryLadder()
         self._capture: CaptureWorker | None = None
         self._connected_at: float | None = None
@@ -193,6 +198,7 @@ class RealtimeRobotSession:
         self.status.metrics.observe_ms(name, (time.monotonic() - self._speech_ended_at) * 1000.0)
 
     def _on_fsm_transition(self, old_state: SessionState, new_state: SessionState, reason: str) -> None:
+        self._last_fsm_transition_at = time.monotonic()
         self.status.record_event(
             "fsm.transition", from_state=old_state.name, to_state=new_state.name, reason=reason
         )
@@ -291,6 +297,7 @@ class RealtimeRobotSession:
                 asyncio.create_task(self._playback_loop(stop_event), name="playback-loop"),
                 asyncio.create_task(self._event_loop(stop_event), name="event-loop"),
                 asyncio.create_task(self._watchdog_loop(), name="watchdog-loop"),
+                asyncio.create_task(self._supervisor_loop(), name="supervisor-loop"),
             ]
             try:
                 await asyncio.gather(*tasks)
@@ -1127,6 +1134,21 @@ class RealtimeRobotSession:
                 self.status.record_event("camera.capture.failed", reason="watchdog_timeout")
             self.status.add_event(f"protocol watchdog: {exc.operation} timed out", level="warning")
             raise
+
+    async def _supervisor_loop(self) -> None:
+        """FSM-inactivity check (spec §24): a non-LISTENING state with no
+        transition for 120s means something wedged with no watchdog armed.
+        Raising WatchdogTimeout reuses the classify→TRANSIENT→reconnect path."""
+        while True:
+            await asyncio.sleep(SUPERVISOR_POLL_SECONDS)
+            state = self.fsm.state
+            age = time.monotonic() - self._last_fsm_transition_at
+            if state is not SessionState.LISTENING and age > FSM_INACTIVITY_LIMIT_SECONDS:
+                self.status.record_event(
+                    "supervisor.intervention",
+                    check="fsm_inactivity", state=state.name, age_seconds=round(age, 1),
+                )
+                raise WatchdogTimeout("fsm_inactivity", FSM_INACTIVITY_LIMIT_SECONDS)
 
     async def reset_connection_state(self) -> None:
         """Spec §4: a reconnect must never inherit partially active response state."""

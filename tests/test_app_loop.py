@@ -11,6 +11,7 @@ from reachy_mini.utils import create_head_pose
 from reachy_openai_realtime.audio.capture import AudioPipelineStalled
 from reachy_openai_realtime.main import ReachyOpenaiRealtime
 from reachy_openai_realtime.session.recovery import SessionOutcome
+from reachy_openai_realtime.session.supervisor import RestartBudget
 
 # ---------------------------------------------------------------------------
 # Fake robot surface
@@ -198,3 +199,85 @@ def test_app_loop_continues_after_audio_pipeline_stalled(tmp_path, monkeypatch) 
     assert "app.stop" in recorded_names, (
         f"app.stop not recorded by FakeRecorder; got {recorded_names}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Step 7: Escalation test (spec §24)
+# ---------------------------------------------------------------------------
+
+
+def make_repeated_stall_session_class(stop_event: threading.Event, stall_count: int = 3) -> type:
+    """Session stub that raises AudioPipelineStalled `stall_count` times, then stops cleanly."""
+    state = {"count": 0}
+
+    class StubSession:
+        def __init__(self, robot: Any, motion: Any, config: Any, status: Any, **kwargs: Any) -> None:
+            state["count"] += 1
+            self._n = state["count"]
+
+        async def run(self, stop_event_arg: Any) -> Any:
+            if self._n <= stall_count:
+                raise AudioPipelineStalled(f"stall #{self._n}")
+            stop_event.set()
+            return SessionOutcome.STOPPED
+
+    return StubSession
+
+
+def test_escalation_fires_and_loop_honors_stop_event(tmp_path, monkeypatch) -> None:
+    """When AudioPipelineStalled hits the restart limit, supervisor.escalated is recorded
+    and the loop still exits promptly when stop_event is set.
+    """
+    # --- environment setup ---------------------------------------------------
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-escalation")
+
+    # --- collapse real waits -------------------------------------------------
+    # ESCALATION_PAUSE_SECONDS: patch in main's namespace so stop_event.wait() returns fast.
+    monkeypatch.setattr("reachy_openai_realtime.main.ESCALATION_PAUSE_SECONDS", 0.0)
+    monkeypatch.setattr("reachy_openai_realtime.main.time.sleep", lambda _: None)
+
+    # Inject a RestartBudget with limit=2 so escalation fires on the 2nd stall.
+    low_budget = RestartBudget(limit=2, window_seconds=600.0)
+    monkeypatch.setattr("reachy_openai_realtime.main.RestartBudget", lambda: low_budget)
+
+    # --- app object ----------------------------------------------------------
+    app = ReachyOpenaiRealtime()
+    stop_event = threading.Event()
+
+    fake_recorder = FakeRecorder()
+    fake_recorder.close = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "reachy_openai_realtime.main.EventRecorder",
+        lambda *_args, **_kwargs: fake_recorder,
+    )
+
+    # 2 stalls → escalation fires on stall #2; 3rd construction stops cleanly.
+    StubSession = make_repeated_stall_session_class(stop_event, stall_count=2)
+    monkeypatch.setattr("reachy_openai_realtime.main.RealtimeRobotSession", StubSession)
+
+    # --- run in a bounded thread ---------------------------------------------
+    robot = FakeRobot()
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            app.run(robot, stop_event)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=_run, name="escalation-test", daemon=True)
+    t.start()
+    t.join(timeout=10.0)
+
+    assert not t.is_alive(), "app.run() did not finish within 10 s — possible hang"
+    assert not errors, f"app.run() raised unexpectedly: {errors}"
+
+    # --- assertion: supervisor.escalated was recorded ------------------------
+    recorded_names = [e for e, _ in fake_recorder.events]
+    assert "supervisor.escalated" in recorded_names, (
+        f"Expected supervisor.escalated in events; got {recorded_names}"
+    )
+
+    # --- assertion: stop_event was honored (loop exited) --------------------
+    assert stop_event.is_set(), "stop_event was never set — loop may not have continued past escalation"

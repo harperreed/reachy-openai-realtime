@@ -21,6 +21,7 @@ from .observability.events import EventRecorder, RedactingFormatter
 from .realtime import RealtimeRobotSession
 from .runtime_status import RuntimeStatus
 from .session.recovery import SessionOutcome
+from .session.supervisor import ESCALATION_PAUSE_SECONDS, RestartBudget
 from .settings import (
     events_path,
     load_instance_env,
@@ -342,6 +343,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
         warmup_remaining = 1.0 - (time.monotonic() - audio_started_at)
         if warmup_remaining > 0:
             time.sleep(warmup_remaining)
+        budget = RestartBudget()
         try:
             while not stop_event.is_set():
                 config = AppConfig.from_env()
@@ -358,6 +360,11 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     outcome = asyncio.run(session.run(stop_event))
                 except AudioPipelineStalled:
                     self.runtime_status.add_event("audio pipeline stalled; restarting app session", level="warning")
+                    escalate = budget.record_restart(time.monotonic())
+                    if escalate:
+                        self.runtime_status.record_event(
+                            "supervisor.escalated", restarts=5, window_seconds=600.0
+                        )
                     try:
                         reachy_mini.media.stop_playing()
                         reachy_mini.media.stop_recording()
@@ -365,11 +372,26 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                         reachy_mini.media.start_playing()
                     except Exception:
                         logger.exception("media re-init after stall failed")
+                    if escalate:
+                        stop_event.wait(ESCALATION_PAUSE_SECONDS)
                     continue
                 except Exception as exc:
                     logger.exception("Realtime session stopped with an error")
                     self.runtime_status.record_error(exc)
-                    if stop_event.wait(5.0):
+                    escalate = budget.record_restart(time.monotonic())
+                    if escalate:
+                        self.runtime_status.record_event(
+                            "supervisor.escalated", restarts=5, window_seconds=600.0
+                        )
+                        try:
+                            reachy_mini.media.stop_playing()
+                            reachy_mini.media.stop_recording()
+                            reachy_mini.media.start_recording()
+                            reachy_mini.media.start_playing()
+                        except Exception:
+                            logger.exception("media re-init during escalation failed")
+                        stop_event.wait(ESCALATION_PAUSE_SECONDS)
+                    elif stop_event.wait(5.0):
                         break
                     self.runtime_status.set_phase(
                         "reconnecting",
