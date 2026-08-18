@@ -4,7 +4,6 @@ import asyncio
 import time
 
 import numpy as np
-
 from conftest import FakeSpeakerMedia, ScriptedConnection, drive_fsm
 
 from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
@@ -229,8 +228,8 @@ def test_playback_loop_rejected_chunk_does_not_count_as_played() -> None:
 def test_barge_in_to_cancel_ms_not_recorded_when_generation_not_active() -> None:
     # When generation_active is False (no active response), _interrupt_assistant
     # must NOT record barge_in_to_cancel_ms (no cancel is issued).
-    from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
     from conftest import FakeSpeakerMedia
+    from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
 
     stop_event = FakeStopEvent()
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)

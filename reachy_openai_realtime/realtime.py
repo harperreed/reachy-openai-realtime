@@ -23,19 +23,19 @@ from openai.types.realtime import (
 
 from .audio.capture import AudioPipelineStalled, AudioRecoveryLadder, CaptureWorker
 from .audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
-from .dsp import (
-    audio_level_dbfs,
-    float32_to_pcm16,
-    pcm16_to_float32,
-    resample_linear,
-    select_mono_float32,
-)
 from .config import (
     AppConfig,
     greeting_instructions,
     language_option,
     response_instructions,
     session_instructions,
+)
+from .dsp import (
+    audio_level_dbfs,
+    float32_to_pcm16,
+    pcm16_to_float32,
+    resample_linear,
+    select_mono_float32,
 )
 from .motion import TOOL_DEFINITIONS, MotionController
 from .runtime_status import RuntimeStatus, safe_message
@@ -224,7 +224,7 @@ class RealtimeRobotSession:
                     raise
                 except AudioPipelineStalled:
                     raise  # escalation: main.py rebuilds the entire app session (mic ladder attempt 3)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — every connection error is classified, never re-raised
                     error = exc
                 if stop_event.is_set():
                     break
@@ -424,10 +424,13 @@ class RealtimeRobotSession:
                     doa_angle_degrees = None
                 last_doa_update = now
             state = self.fsm.state
-            if state is SessionState.ASSISTANT_SPEAKING:
-                if self._response_generation_done and now >= self._speaker_busy_until:
-                    self.fsm.transition(SessionState.LISTENING, reason="playback_finished")
-                    state = SessionState.LISTENING
+            if (
+                state is SessionState.ASSISTANT_SPEAKING
+                and self._response_generation_done
+                and now >= self._speaker_busy_until
+            ):
+                self.fsm.transition(SessionState.LISTENING, reason="playback_finished")
+                state = SessionState.LISTENING
             if state in (SessionState.LISTENING, SessionState.USER_SPEAKING):
                 process_turn = True
                 assistant_audio_active = False

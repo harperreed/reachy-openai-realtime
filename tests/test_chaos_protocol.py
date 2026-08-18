@@ -5,8 +5,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
-
 from conftest import ScriptedConnection, drive_fsm, realtime_event
+from test_realtime_manual_turn import BargeInMotion, FakeStopEvent
 
 from reachy_openai_realtime.audio.playback import PlaybackBuffer
 from reachy_openai_realtime.config import AppConfig
@@ -15,7 +15,6 @@ from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog, WatchdogTimeout
 from reachy_openai_realtime.vad import EnergyTurnDetector
-from test_realtime_manual_turn import BargeInMotion, FakeStopEvent
 
 
 def _build_response_done_session(connection: ScriptedConnection, response_id: str = "resp_dup") -> RealtimeRobotSession:

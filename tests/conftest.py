@@ -2,8 +2,8 @@
 # ABOUTME: to a target state through legal transitions only (exercises the table).
 import asyncio
 from collections import deque
+from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Callable
 
 import numpy as np
 

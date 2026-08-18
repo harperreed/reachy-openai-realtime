@@ -3,15 +3,14 @@
 import asyncio
 import time
 
-from conftest import drive_fsm
+from conftest import FakeSpeakerMedia, drive_fsm
+from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
 
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
-from conftest import FakeSpeakerMedia
-from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
 
 
 def test_observe_speech_latency_records_elapsed_ms() -> None:

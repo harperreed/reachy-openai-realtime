@@ -29,7 +29,7 @@ jobs:
             libgirepository1.0-dev \
             pkg-config
       - name: Install Python dependencies
-        run: uv sync --extra dev --locked
+        run: uv sync --locked
       - name: Lint
         run: uv run ruff check .
       - name: Test

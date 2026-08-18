@@ -6,9 +6,10 @@ import json
 import logging
 import re
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, TextIO
+from typing import Any, TextIO
 
 logger = logging.getLogger(__name__)
 
@@ -64,16 +65,15 @@ class EventRecorder:
                 continue
             try:
                 entry[key] = provider()
-            except Exception:
-                # Context is best-effort; a half-initialized session must not
-                # stop the flight recorder.
+            except Exception:  # noqa: BLE001, S112 — context is best-effort
+                # A half-initialized session must not stop the flight recorder.
                 continue
         entry.update(_redact_value(fields))
         line = json.dumps(entry, ensure_ascii=False, default=str)
         with self._lock:
             try:
                 self._write_locked(line)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # Spec §18: the recorder must never take down the voice path.
                 logger.debug("event recorder write failed: %s", exc)
 

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from enum import Enum, auto
-from typing import Callable
 
 logger = logging.getLogger(__name__)
 

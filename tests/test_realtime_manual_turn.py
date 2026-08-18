@@ -5,8 +5,8 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
-
 from conftest import drive_fsm
+
 from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.config import AppConfig

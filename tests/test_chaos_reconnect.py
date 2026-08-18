@@ -5,12 +5,12 @@ import os
 import threading
 
 from conftest import FakeRealtimeClient, ScriptedConnection, realtime_event
+from test_realtime_manual_turn import BargeInMotion, FakeMedia, stereo_frame
 
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.recovery import SessionOutcome
-from test_realtime_manual_turn import BargeInMotion, FakeMedia, stereo_frame
 
 
 class ChaosMedia(FakeMedia):

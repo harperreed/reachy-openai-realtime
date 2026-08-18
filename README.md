@@ -91,7 +91,7 @@ The AI camera starts OFF. When enabled, the UI shows a local preview and the app
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync
 uv run python scripts/check_secrets.py
 uv run pytest -q
 uv run ruff check .

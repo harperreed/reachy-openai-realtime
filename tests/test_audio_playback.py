@@ -3,7 +3,6 @@
 import time
 
 import numpy as np
-
 from conftest import FakeSpeakerMedia
 
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
@@ -301,12 +300,12 @@ def test_overrun_handler_resets_speaker_busy_until() -> None:
     import asyncio
 
     from conftest import drive_fsm
+    from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
 
     from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
     from reachy_openai_realtime.runtime_status import RuntimeStatus
     from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
     from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
-    from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
 
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
     session.robot = type("Robot", (), {"media": BargeInMedia()})()
@@ -358,12 +357,12 @@ def test_playback_overrun_cancels_response_and_returns_to_listening() -> None:
     import asyncio
 
     from conftest import drive_fsm
+    from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
 
     from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
     from reachy_openai_realtime.runtime_status import RuntimeStatus
     from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
     from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
-    from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
 
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
     session.robot = type("Robot", (), {"media": BargeInMedia()})()

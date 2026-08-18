@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Callable
+from collections.abc import Callable
 
 DEFAULT_DEADLINES: dict[str, float] = {
     "session_update": 5.0,

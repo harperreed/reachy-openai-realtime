@@ -12,14 +12,14 @@ from fastapi import HTTPException, Response
 from pydantic import BaseModel
 from reachy_mini import ReachyMini, ReachyMiniApp
 
+from .audio.capture import AudioPipelineStalled
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
 from .motion import MotionController
 from .observability.events import EventRecorder
-from .audio.capture import AudioPipelineStalled
 from .realtime import RealtimeRobotSession
-from .session.recovery import SessionOutcome
 from .runtime_status import RuntimeStatus
+from .session.recovery import SessionOutcome
 from .settings import (
     events_path,
     load_instance_env,

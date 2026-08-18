@@ -4,8 +4,8 @@ import asyncio
 import time
 
 import numpy as np
-
 from conftest import FakeSpeakerMedia, drive_fsm
+from test_realtime_manual_turn import FakeConnection, FakeMedia, FakeMotion, FakeStopEvent, stereo_frame
 
 from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
@@ -15,8 +15,6 @@ from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.vad import EnergyTurnDetector
-
-from test_realtime_manual_turn import FakeConnection, FakeMedia, FakeMotion, FakeStopEvent, stereo_frame
 
 
 class ExhaustionStopMedia(FakeMedia):
