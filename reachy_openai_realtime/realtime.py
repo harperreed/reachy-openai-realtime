@@ -707,7 +707,7 @@ class RealtimeRobotSession:
                     if self._playback_started_at is None:
                         self._playback_started_at = time.monotonic()
                     self._playback_pushed_ms += pcm_out.size * 1_000.0 / target_rate
-            self.status.record_audio_output_played()
+                    self.status.record_audio_output_played()
 
     async def _event_loop(self, stop_event: Any) -> None:
         async for event in self.connection:
@@ -980,6 +980,7 @@ class RealtimeRobotSession:
             except Exception:
                 logger.exception("response.cancel after overrun failed")
         await self._clear_playback()
+        self._speaker_busy_until = time.monotonic()
         self.fsm.transition(SessionState.LISTENING, reason="playback_overrun")
 
     async def _watchdog_loop(self) -> None:

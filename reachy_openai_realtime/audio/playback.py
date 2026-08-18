@@ -117,6 +117,8 @@ class SpeakerWorker:
         self.frames_total = 0
 
     def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("SpeakerWorker already started")
         self._thread = threading.Thread(target=self._run, name="audio-speaker", daemon=True)
         self._thread.start()
 
