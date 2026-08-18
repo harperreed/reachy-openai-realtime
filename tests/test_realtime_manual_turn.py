@@ -8,6 +8,7 @@ import numpy as np
 
 from conftest import drive_fsm
 from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
+from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
@@ -198,7 +199,8 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     session.config = AppConfig()
     session.status = RuntimeStatus()
     session.connection = FakeConnection(stop_event)
-    session._playback_queue = asyncio.Queue()
+    session._playback = PlaybackBuffer()
+    session._speaker = SpeakerWorker(type("M", (), {"push_audio_sample": lambda self, d: None})())
     session.fsm = SessionStateMachine()
     session._response_generation_done = True
     drive_fsm(session.fsm, SessionState.LISTENING)
@@ -310,7 +312,8 @@ def test_barge_in_cancels_clears_and_truncates_at_played_audio() -> None:
     session.motion = motion
     session.status = RuntimeStatus()
     session.connection = FakeConnection(stop_event)
-    session._playback_queue = asyncio.Queue()
+    session._playback = PlaybackBuffer()
+    session._speaker = SpeakerWorker(type("M", (), {"push_audio_sample": lambda self, d: None})())
     session._playback_io_lock = asyncio.Lock()
     session._pending_tool_outputs = []
     session.connection_epoch = 1
@@ -352,7 +355,8 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session.config = AppConfig()
     session.status = RuntimeStatus()
     session.connection = FakeConnection(stop_event)
-    session._playback_queue = asyncio.Queue()
+    session._playback = PlaybackBuffer()
+    session._speaker = SpeakerWorker(type("M", (), {"push_audio_sample": lambda self, d: None})())
     session._playback_io_lock = asyncio.Lock()
     session._pending_tool_outputs = []
     session.connection_epoch = 1

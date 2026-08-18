@@ -22,6 +22,7 @@ from openai.types.realtime import (
 )
 
 from .audio.capture import AudioPipelineStalled, AudioRecoveryLadder, CaptureWorker
+from .audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
 from .dsp import (
     audio_level_dbfs,
     float32_to_pcm16,
@@ -150,7 +151,9 @@ class RealtimeRobotSession:
         self.connection: Any = None
         self.connection_epoch = 0
         self._pending_tool_outputs: list[tuple[int, str, str]] = []
-        self._playback_queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=64)
+        self._playback = PlaybackBuffer()
+        self._speaker = SpeakerWorker(self.robot.media, on_write=self._on_speaker_write)
+        self._last_speaker_write_at = time.monotonic()
         self._playback_io_lock = asyncio.Lock()
         self._greeting_sent = False
         self.fsm = SessionStateMachine(on_transition=self._on_fsm_transition)
@@ -178,9 +181,13 @@ class RealtimeRobotSession:
             "fsm.transition", from_state=old_state.name, to_state=new_state.name, reason=reason
         )
 
+    def _on_speaker_write(self, duration_ms: float, received_at: float) -> None:
+        self._last_speaker_write_at = time.monotonic()  # Task 11 adds latency metrics here
+
     async def run(self, stop_event: Any) -> SessionOutcome:
         self._capture = CaptureWorker(self.robot.media)
         self._capture.start()
+        self._speaker.start()
         try:
             backoff = BackoffPolicy()
             while not stop_event.is_set():
@@ -218,6 +225,7 @@ class RealtimeRobotSession:
             self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
             return SessionOutcome.STOPPED
         finally:
+            self._speaker.close()
             self._capture.close()
             self._capture = None
 
@@ -673,24 +681,33 @@ class RealtimeRobotSession:
             return True
         return False
 
+    def _prepare_output(self, pcm: np.ndarray, target_rate: int) -> np.ndarray:
+        """Convert int16 PCM to float32 and resample to the output device rate."""
+        return resample_linear(pcm16_to_float32(pcm), self.config.output_rate, target_rate)
+
     async def _playback_loop(self, stop_event: Any) -> None:
         target_rate = self.robot.media.get_output_audio_samplerate()
         while not stop_event.is_set():
-            try:
-                sample = await asyncio.wait_for(self._playback_queue.get(), timeout=0.25)
-            except asyncio.TimeoutError:
+            chunk = await asyncio.to_thread(self._playback.pop_wait, 0.25, self.connection_epoch)
+            if chunk is None:
                 if not self._assistant_audio_active():
                     self.motion.set_speaking_enabled(False)
                 continue
-            audio = resample_linear(sample, self.config.output_rate, target_rate)
+            pcm_out = self._prepare_output(chunk.pcm, target_rate)
             self.motion.set_speaking_enabled(True)
             async with self._playback_io_lock:
-                await asyncio.to_thread(self.robot.media.push_audio_sample, audio)
-                if self._playback_started_at is None:
-                    self._playback_started_at = time.monotonic()
-                self._playback_pushed_ms += audio.size * 1_000.0 / target_rate
+                accepted = await asyncio.to_thread(
+                    self._speaker.submit, pcm_out, chunk.duration_ms, chunk.received_at, 1.0
+                )
+                if not accepted and self._speaker.stalled(2.0):
+                    self.status.record_event("audio.playback.restarted", reason="speaker_stalled")
+                    self._speaker.flush()
+                    await asyncio.to_thread(self._restart_media_pipeline)
+                else:
+                    if self._playback_started_at is None:
+                        self._playback_started_at = time.monotonic()
+                    self._playback_pushed_ms += pcm_out.size * 1_000.0 / target_rate
             self.status.record_audio_output_played()
-            self._playback_queue.task_done()
 
     async def _event_loop(self, stop_event: Any) -> None:
         async for event in self.connection:
@@ -789,10 +806,17 @@ class RealtimeRobotSession:
                     connected=True,
                     detail_key="detail_assistant_speaking",
                 )
-                try:
-                    self._playback_queue.put_nowait(pcm16_to_float32(pcm))
-                except asyncio.QueueFull:
-                    logger.warning("Dropping output audio: playback queue full")
+                result = self._playback.push(
+                    PlaybackChunk(
+                        epoch=self.connection_epoch,
+                        response_id=self._current_response_id or "",
+                        pcm=pcm,
+                        duration_ms=duration * 1_000.0,
+                        received_at=time.monotonic(),
+                    )
+                )
+                if result.overrun:
+                    await self._handle_playback_overrun(self._playback.clear())
             elif event_type == "response.output_audio_transcript.done":
                 if str(event.response_id) in self._interrupted_response_ids:
                     continue
@@ -944,6 +968,20 @@ class RealtimeRobotSession:
         self.status.record_interruption(audio_end_ms)
         self.fsm.transition(SessionState.USER_SPEAKING, reason="user_turn_continues")
 
+    async def _handle_playback_overrun(self, dropped_ms: float) -> None:
+        self.status.record_event("audio.playback.overrun", dropped_ms=round(dropped_ms, 1))
+        self.status.add_event("warning", "playback overran; dropping stale audio")
+        response_id = self._current_response_id
+        if response_id and self.connection is not None:
+            self._interrupted_response_ids.add(response_id)
+            try:
+                await self.connection.response.cancel(response_id=response_id)
+                self.watchdog.arm("response_cancel")
+            except Exception:
+                logger.exception("response.cancel after overrun failed")
+        await self._clear_playback()
+        self.fsm.transition(SessionState.LISTENING, reason="playback_overrun")
+
     async def _watchdog_loop(self) -> None:
         try:
             await self.watchdog.watch()
@@ -960,11 +998,8 @@ class RealtimeRobotSession:
         if self._camera_capture_task is not None:
             self._camera_capture_task.cancel()
             self._camera_capture_task = None
-        while not self._playback_queue.empty():
-            try:
-                self._playback_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+        self._playback.clear()
+        self._speaker.flush()
         try:
             self.motion.stop_current()
         except Exception:
@@ -985,12 +1020,8 @@ class RealtimeRobotSession:
         self._response_generation_done = True
 
     async def _clear_playback(self) -> None:
-        while True:
-            try:
-                self._playback_queue.get_nowait()
-                self._playback_queue.task_done()
-            except asyncio.QueueEmpty:
-                break
+        self._playback.clear()
+        self._speaker.flush()
         audio = getattr(self.robot.media, "audio", None)
         if audio is not None and hasattr(audio, "clear_player"):
             try:

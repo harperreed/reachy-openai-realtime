@@ -3,13 +3,31 @@
 import asyncio
 import time
 
+import numpy as np
+
 from conftest import drive_fsm
 
+from reachy_openai_realtime.audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
 from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.vad import EnergyTurnDetector
+
+
+class FakeSpeakerMedia:
+    def push_audio_sample(self, data: np.ndarray) -> None:
+        pass
+
+
+def dirty_chunk() -> PlaybackChunk:
+    return PlaybackChunk(
+        epoch=3,
+        response_id="resp_live",
+        pcm=np.zeros(2400, dtype=np.int16),
+        duration_ms=100.0,
+        received_at=time.monotonic(),
+    )
 
 
 def test_recent_ids_bounded() -> None:
@@ -30,8 +48,9 @@ def make_dirty_session() -> RealtimeRobotSession:
     drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
     session.connection_epoch = 3
     session._response_generation_done = False
-    session._playback_queue = asyncio.Queue()
-    session._playback_queue.put_nowait(object())
+    session._playback = PlaybackBuffer()
+    session._playback.push(dirty_chunk())
+    session._speaker = SpeakerWorker(FakeSpeakerMedia())
     session._pending_tool_outputs = [(3, "call_1", "{}"), (2, "call_0", "{}")]
     session._current_response_id = "resp_live"
     session._current_audio_item_id = "item_live"
@@ -64,7 +83,7 @@ def test_reset_connection_state_clears_spec_checklist() -> None:
     session.motion = FakeMotion()
     asyncio.run(session.reset_connection_state())
 
-    assert session._playback_queue.empty()
+    assert session._playback.queued_ms() == 0.0
     assert session._pending_tool_outputs == []
     assert session._current_response_id is None
     assert session._current_audio_item_id is None

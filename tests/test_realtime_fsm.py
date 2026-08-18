@@ -6,6 +6,7 @@ import time
 from conftest import drive_fsm
 
 from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
+from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
@@ -16,6 +17,11 @@ from reachy_openai_realtime.vad import EnergyTurnDetector
 import numpy as np
 
 from test_realtime_manual_turn import FakeConnection, FakeMedia, FakeMotion, FakeStopEvent, stereo_frame
+
+
+class FakeSpeakerMedia:
+    def push_audio_sample(self, data: np.ndarray) -> None:
+        pass
 
 
 class ExhaustionStopMedia(FakeMedia):
@@ -41,7 +47,8 @@ def make_session(frames, stop_event) -> RealtimeRobotSession:
     session.connection = FakeConnection(stop_event)
     session.fsm = SessionStateMachine()
     session._response_generation_done = True
-    session._playback_queue = asyncio.Queue()
+    session._playback = PlaybackBuffer()
+    session._speaker = SpeakerWorker(FakeSpeakerMedia())
     session._speaker_busy_until = time.monotonic() - 1.0
     session._camera_enabled_callback = lambda: False
     session._camera_capture_task = None
