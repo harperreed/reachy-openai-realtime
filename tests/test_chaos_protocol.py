@@ -200,3 +200,40 @@ def test_audio_free_response_done_transitions_to_listening() -> None:
     assert session.fsm.state is SessionState.LISTENING, (
         f"FSM must reach LISTENING after audio-free response.done; got {session.fsm.state}"
     )
+
+
+def test_response_done_defers_listening_while_audio_still_playing() -> None:
+    """response.done with speaker audio still draining must NOT transition to LISTENING.
+
+    The other side of the audio_still_playing condition: an early transition would
+    open the mic while the speaker plays, causing echo-triggered false barge-ins.
+    The _record_loop rescue (ASSISTANT_SPEAKING + generation done + speaker idle)
+    finishes the transition once playback drains.
+    """
+    done = realtime_event(
+        "response.done",
+        response=SimpleNamespace(id="resp_draining", status="completed", usage=None, output=[]),
+    )
+    drained = asyncio.Event()
+    connection = ScriptedConnection([done], on_drained=lambda: drained.set())
+
+    session = _build_response_done_session(connection, response_id="resp_draining")
+    session._pending_tool_outputs = []
+    drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
+    session._speaker_busy_until = time.monotonic() + 5.0
+
+    async def run_event_loop() -> None:
+        task = asyncio.ensure_future(session._event_loop(FakeStopEvent()))
+        await asyncio.wait_for(drained.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_event_loop())
+
+    assert session.fsm.state is SessionState.ASSISTANT_SPEAKING, (
+        f"FSM must stay ASSISTANT_SPEAKING while audio drains; got {session.fsm.state}"
+    )
+    assert session._response_generation_done is True
