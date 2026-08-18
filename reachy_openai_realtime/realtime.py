@@ -43,6 +43,33 @@ from .vad import EnergyTurnDetector
 logger = logging.getLogger(__name__)
 
 
+class RecentIds:
+    """Bounded remembered-ID set (spec §27: interrupted response IDs must not grow forever)."""
+
+    def __init__(self, max_size: int = 32) -> None:
+        self._order: deque[str] = deque()
+        self._members: set[str] = set()
+        self._max_size = max_size
+
+    def add(self, value: str) -> None:
+        if value in self._members:
+            return
+        if len(self._order) >= self._max_size:
+            self._members.discard(self._order.popleft())
+        self._order.append(value)
+        self._members.add(value)
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._members
+
+    def __len__(self) -> int:
+        return len(self._order)
+
+    def clear(self) -> None:
+        self._order.clear()
+        self._members.clear()
+
+
 class DoAPoller:
     """Read the ReSpeaker USB control endpoint without blocking audio capture."""
 
@@ -118,7 +145,8 @@ class RealtimeRobotSession:
         self._capture_camera_jpeg = capture_camera_jpeg
         self.client = AsyncOpenAI()
         self.connection: Any = None
-        self._pending_tool_outputs: list[tuple[str, str]] = []
+        self.connection_epoch = 0
+        self._pending_tool_outputs: list[tuple[int, str, str]] = []
         self._playback_queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=64)
         self._playback_io_lock = asyncio.Lock()
         self._greeting_sent = False
@@ -130,7 +158,7 @@ class RealtimeRobotSession:
         self._current_audio_content_index = 0
         self._playback_started_at: float | None = None
         self._playback_pushed_ms = 0.0
-        self._interrupted_response_ids: set[str] = set()
+        self._interrupted_response_ids: RecentIds = RecentIds()
         self._camera_capture_task: asyncio.Task[bool] | None = None
         self._last_camera_item_id: str | None = None
         self._pending_camera_items: dict[str, int] = {}
@@ -182,11 +210,13 @@ class RealtimeRobotSession:
                         event=True,
                         detail_key="detail_reconnecting",
                     )
+                    await self.reset_connection_state()
                     await asyncio.sleep(2 ** (attempt - 1))
         if last_error is not None:
             raise RuntimeError("Realtime API reconnect attempts exhausted") from last_error
 
     async def _run_connection(self, stop_event: Any) -> None:
+        self.connection_epoch += 1
         async with self.client.realtime.connect(model=self.config.model) as connection:
             self.connection = connection
             self.fsm.transition(SessionState.INITIALIZING, reason="socket_open")
@@ -793,11 +823,13 @@ class RealtimeRobotSession:
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             result = {"ok": False, "error": str(exc)}
         self.status.record_motion(str(event.name), arguments, bool(result.get("ok")))
-        self._pending_tool_outputs.append((call_id, json.dumps(result, ensure_ascii=False)))
+        self._pending_tool_outputs.append((self.connection_epoch, call_id, json.dumps(result, ensure_ascii=False)))
 
     async def _flush_tool_outputs(self) -> None:
         pending, self._pending_tool_outputs = self._pending_tool_outputs, []
-        for call_id, output in pending:
+        for epoch, call_id, output in pending:
+            if epoch != self.connection_epoch:
+                continue
             await self.connection.conversation.item.create(
                 item={"type": "function_call_output", "call_id": call_id, "output": output}
             )
@@ -823,6 +855,7 @@ class RealtimeRobotSession:
         return int(min(self._playback_pushed_ms, elapsed_ms))
 
     async def _interrupt_assistant(self) -> None:
+        epoch = self.connection_epoch
         generation_active = self.fsm.generation_active()
         self.fsm.transition(SessionState.INTERRUPTING, reason="barge_in")
         response_id = self._current_response_id
@@ -849,9 +882,41 @@ class RealtimeRobotSession:
                 audio_end_ms=audio_end_ms,
             )
 
+        if epoch != self.connection_epoch:
+            return  # connection turned over mid-interrupt; new epoch owns the state
+
         self._speaker_busy_until = time.monotonic()
         self.status.record_interruption(audio_end_ms)
         self.fsm.transition(SessionState.USER_SPEAKING, reason="user_turn_continues")
+
+    async def reset_connection_state(self) -> None:
+        """Spec §4: a reconnect must never inherit partially active response state."""
+        if self._camera_capture_task is not None:
+            self._camera_capture_task.cancel()
+            self._camera_capture_task = None
+        while not self._playback_queue.empty():
+            try:
+                self._playback_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        try:
+            self.motion.stop_current()
+        except Exception:
+            logger.exception("motion stop during reset failed")
+        self._vad.reset_turn()
+        self._pending_tool_outputs.clear()
+        self._interrupted_response_ids.clear()
+        self._current_response_id = None
+        self._current_audio_item_id = None
+        self._current_audio_content_index = 0
+        self._playback_started_at = None
+        self._playback_pushed_ms = 0.0
+        self._speaker_busy_until = time.monotonic()
+        self._pending_camera_items.clear()
+        self._camera_add_events.clear()
+        self._camera_delete_events.clear()
+        self._last_camera_item_id = None
+        self._response_generation_done = True
 
     async def _clear_playback(self) -> None:
         while True:

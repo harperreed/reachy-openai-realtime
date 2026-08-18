@@ -8,7 +8,7 @@ import numpy as np
 
 from conftest import drive_fsm
 from reachy_openai_realtime.config import AppConfig
-from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession
+from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.vad import EnergyTurnDetector
@@ -304,6 +304,7 @@ def test_barge_in_cancels_clears_and_truncates_at_played_audio() -> None:
     session._playback_queue = asyncio.Queue()
     session._playback_io_lock = asyncio.Lock()
     session._pending_tool_outputs = []
+    session.connection_epoch = 1
     session.fsm = SessionStateMachine()
     session._response_generation_done = False
     drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
@@ -313,7 +314,7 @@ def test_barge_in_cancels_clears_and_truncates_at_played_audio() -> None:
     session._current_audio_content_index = 0
     session._playback_started_at = time.monotonic() - 1.5
     session._playback_pushed_ms = 4_000.0
-    session._interrupted_response_ids = set()
+    session._interrupted_response_ids = RecentIds()
 
     asyncio.run(session._interrupt_assistant())
 
@@ -344,6 +345,7 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session._playback_queue = asyncio.Queue()
     session._playback_io_lock = asyncio.Lock()
     session._pending_tool_outputs = []
+    session.connection_epoch = 1
     session.fsm = SessionStateMachine()
     session._response_generation_done = False
     drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
@@ -353,7 +355,7 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session._current_audio_content_index = 0
     session._playback_started_at = time.monotonic() - 0.5
     session._playback_pushed_ms = 2_000.0
-    session._interrupted_response_ids = set()
+    session._interrupted_response_ids = RecentIds()
     session._vad = EnergyTurnDetector()
 
     asyncio.run(session._record_loop(stop_event))
