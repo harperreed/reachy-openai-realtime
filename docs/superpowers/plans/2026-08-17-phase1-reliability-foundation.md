@@ -3356,3 +3356,5 @@ Out of scope here by design: §10–§17, §20–§25 (Phases 2–5), §9 neural
 
 The Task 10 wedged-submit speaker test relies on real thread timing (0.05 s-scale waits). If it flakes under Phase 6 soak load, tighten it with events rather than longer sleeps.
 
+`_handle_playback_overrun` targets LISTENING — legal from ASSISTANT_SPEAKING and WAITING_RESPONSE; from INTERRUPTING or TOOL_EXECUTION the FSM's strict=False mode logs a warning instead of crashing (by design). Any future phase adding states must re-check overrun-transition legality.
+
