@@ -1,0 +1,66 @@
+# ABOUTME: FSM integration tests for RealtimeRobotSession. Verifies that the
+# ABOUTME: record loop drives FSM state correctly during a manual turn.
+import asyncio
+import time
+
+from conftest import drive_fsm
+
+from reachy_openai_realtime.config import AppConfig
+from reachy_openai_realtime.realtime import RealtimeRobotSession
+from reachy_openai_realtime.runtime_status import RuntimeStatus
+from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
+from reachy_openai_realtime.vad import EnergyTurnDetector
+
+from test_realtime_manual_turn import FakeConnection, FakeMedia, FakeMotion, FakeStopEvent, stereo_frame
+
+
+def make_session(frames, stop_event) -> RealtimeRobotSession:
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.robot = type("Robot", (), {"media": FakeMedia(frames)})()
+    session.motion = FakeMotion()
+    session.config = AppConfig()
+    session.status = RuntimeStatus()
+    session.connection = FakeConnection(stop_event)
+    session.fsm = SessionStateMachine()
+    session._response_generation_done = True
+    session._playback_queue = asyncio.Queue()
+    session._speaker_busy_until = time.monotonic() - 1.0
+    session._camera_enabled_callback = lambda: False
+    session._camera_capture_task = None
+    session._last_camera_item_id = None
+    session._pending_camera_items = {}
+    session._camera_add_events = {}
+    session._camera_delete_events = {}
+    session._vad = EnergyTurnDetector()
+    return session
+
+
+def test_manual_turn_walks_listening_speaking_waiting() -> None:
+    stop_event = FakeStopEvent()
+    frames = (
+        [stereo_frame(-50.0) for _ in range(10)]
+        + [stereo_frame(-30.0) for _ in range(15)]
+        + [stereo_frame(-60.0) for _ in range(40)]
+    )
+    session = make_session(frames, stop_event)
+    drive_fsm(session.fsm, SessionState.LISTENING)
+
+    asyncio.run(session._record_loop(stop_event))
+
+    assert session.connection.input_audio_buffer.committed == 1
+    assert session.connection.response.created == 1
+    assert session.fsm.state is SessionState.WAITING_RESPONSE
+    assert session._response_generation_done is False
+
+
+def test_frames_ignored_while_waiting_for_response() -> None:
+    stop_event = FakeStopEvent()
+    frames = [stereo_frame(-30.0) for _ in range(15)]
+    session = make_session(frames, stop_event)
+    drive_fsm(session.fsm, SessionState.WAITING_RESPONSE)
+
+    asyncio.run(session._record_loop(stop_event))
+
+    assert session.connection.input_audio_buffer.appended == 0
+    assert session.connection.input_audio_buffer.committed == 0
+    assert session.fsm.state is SessionState.WAITING_RESPONSE

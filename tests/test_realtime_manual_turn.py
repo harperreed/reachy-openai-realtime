@@ -6,9 +6,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from conftest import drive_fsm
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
+from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.vad import EnergyTurnDetector
 
 
@@ -195,8 +197,9 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     session.status = RuntimeStatus()
     session.connection = FakeConnection(stop_event)
     session._playback_queue = asyncio.Queue()
-    session._input_enabled = True
-    session._response_active = False
+    session.fsm = SessionStateMachine()
+    session._response_generation_done = True
+    drive_fsm(session.fsm, SessionState.LISTENING)
     session._speaker_busy_until = time.monotonic() - 1.0
     session._camera_enabled_callback = lambda: True
     session._capture_camera_jpeg = lambda: b"\xff\xd8camera-jpeg\xff\xd9"
@@ -301,8 +304,9 @@ def test_barge_in_cancels_clears_and_truncates_at_played_audio() -> None:
     session._playback_queue = asyncio.Queue()
     session._playback_io_lock = asyncio.Lock()
     session._pending_tool_outputs = []
-    session._input_enabled = False
-    session._response_active = True
+    session.fsm = SessionStateMachine()
+    session._response_generation_done = False
+    drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
     session._speaker_busy_until = time.monotonic() + 5.0
     session._current_response_id = "resp_123"
     session._current_audio_item_id = "item_123"
@@ -321,6 +325,7 @@ def test_barge_in_cancels_clears_and_truncates_at_played_audio() -> None:
     assert truncation["item_id"] == "item_123"
     assert 1_400 <= truncation["audio_end_ms"] <= 1_700
     assert session.status.snapshot()["interruptions"] == 1
+    assert session.fsm.state is SessionState.USER_SPEAKING
 
 
 def test_record_loop_detects_human_during_assistant_playback() -> None:
@@ -339,8 +344,9 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session._playback_queue = asyncio.Queue()
     session._playback_io_lock = asyncio.Lock()
     session._pending_tool_outputs = []
-    session._input_enabled = False
-    session._response_active = True
+    session.fsm = SessionStateMachine()
+    session._response_generation_done = False
+    drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
     session._speaker_busy_until = time.monotonic() + 5.0
     session._current_response_id = "resp_playing"
     session._current_audio_item_id = "item_playing"

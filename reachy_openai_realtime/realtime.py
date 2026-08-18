@@ -37,6 +37,7 @@ from .config import (
 )
 from .motion import TOOL_DEFINITIONS, MotionController
 from .runtime_status import RuntimeStatus, safe_message
+from .session.fsm import SessionState, SessionStateMachine
 from .vad import EnergyTurnDetector
 
 logger = logging.getLogger(__name__)
@@ -121,8 +122,8 @@ class RealtimeRobotSession:
         self._playback_queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=64)
         self._playback_io_lock = asyncio.Lock()
         self._greeting_sent = False
-        self._input_enabled = False
-        self._response_active = False
+        self.fsm = SessionStateMachine(on_transition=self._on_fsm_transition)
+        self._response_generation_done = True
         self._speaker_busy_until = 0.0
         self._current_response_id: str | None = None
         self._current_audio_item_id: str | None = None
@@ -138,10 +139,17 @@ class RealtimeRobotSession:
         self._doa_poller: DoAPoller | None = None
         self._vad = EnergyTurnDetector()
 
+    def _on_fsm_transition(self, old_state: SessionState, new_state: SessionState, reason: str) -> None:
+        self.status.record_event(
+            "fsm.transition", from_state=old_state.name, to_state=new_state.name, reason=reason
+        )
+
     async def run(self, stop_event: Any) -> None:
         last_error: Exception | None = None
         for attempt in range(1, self.config.reconnect_attempts + 1):
             if stop_event.is_set():
+                self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
+                self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
                 return
             try:
                 label = "Realtime APIへ接続しています"
@@ -156,6 +164,7 @@ class RealtimeRobotSession:
                         "detail_connecting" if attempt == 1 else "detail_reconnecting"
                     ),
                 )
+                self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
                 await self._run_connection(stop_event)
                 return
             except asyncio.CancelledError:
@@ -164,6 +173,7 @@ class RealtimeRobotSession:
                 last_error = exc
                 self.status.record_error(exc)
                 logger.exception("Realtime connection failed (%d/%d)", attempt, self.config.reconnect_attempts)
+                self.fsm.transition(SessionState.RECOVERING, reason=type(exc).__name__.lower())
                 if attempt < self.config.reconnect_attempts:
                     self.status.set_phase(
                         "reconnecting",
@@ -179,6 +189,7 @@ class RealtimeRobotSession:
     async def _run_connection(self, stop_event: Any) -> None:
         async with self.client.realtime.connect(model=self.config.model) as connection:
             self.connection = connection
+            self.fsm.transition(SessionState.INITIALIZING, reason="socket_open")
             self._last_camera_item_id = None
             self._pending_camera_items.clear()
             self._camera_add_events.clear()
@@ -283,8 +294,7 @@ class RealtimeRobotSession:
         while not stop_event.is_set():
             sample = await asyncio.to_thread(self.robot.media.get_audio_sample)
             if sample is None:
-                await asyncio.sleep(0.005)
-                continue
+                break
             if not microphone_ready:
                 microphone_ready = True
                 self.status.add_event(
@@ -304,9 +314,25 @@ class RealtimeRobotSession:
                     doa_speech_detected = None
                     doa_angle_degrees = None
                 last_doa_update = now
+            state = self.fsm.state
+            if state is SessionState.ASSISTANT_SPEAKING:
+                if self._response_generation_done and now >= self._speaker_busy_until:
+                    self.fsm.transition(SessionState.LISTENING, reason="playback_finished")
+                    state = SessionState.LISTENING
+            if state in (SessionState.LISTENING, SessionState.USER_SPEAKING):
+                process_turn = True
+                assistant_audio_active = False
+            elif state in (SessionState.ASSISTANT_SPEAKING, SessionState.INTERRUPTING):
+                process_turn = True
+                assistant_audio_active = True
+            else:
+                self._vad.reset_turn()
+                pre_roll.clear()
+                pre_roll_ms = 0.0
+                continue
+
             if (
-                self._input_enabled
-                and not self._response_active
+                state is SessionState.LISTENING
                 and not self._vad.speech_active
                 and now >= self._speaker_busy_until
             ):
@@ -319,8 +345,6 @@ class RealtimeRobotSession:
                     detail_key="detail_listening",
                     detail_params=self._listening_params(),
                 )
-            assistant_audio_active = self._assistant_audio_active(now)
-            can_listen = self._input_enabled or assistant_audio_active
             if now - last_level_update >= 0.25:
                 self.status.record_audio_sample(
                     dbfs=dbfs,
@@ -329,14 +353,14 @@ class RealtimeRobotSession:
                     noise_floor_dbfs=self._vad.noise_floor_dbfs,
                     start_threshold_dbfs=self._vad.start_threshold_dbfs,
                     continue_threshold_dbfs=self._vad.continue_threshold_dbfs,
-                    input_enabled=can_listen,
-                    response_active=self._response_active,
+                    input_enabled=process_turn,
+                    response_active=self.fsm.generation_active(),
                     doa_speech_detected=doa_speech_detected,
                     doa_angle_degrees=doa_angle_degrees,
                 )
                 last_level_update = now
             if (
-                can_listen
+                process_turn
                 and not signal_detected
                 and doa_speech_detected is not False
                 and dbfs >= -60.0
@@ -353,12 +377,6 @@ class RealtimeRobotSession:
             audio = resample_linear(mono, source_rate, self.config.input_rate)
             encoded = base64.b64encode(float32_to_pcm16(audio).tobytes()).decode("ascii")
             duration_ms = audio.size * 1_000.0 / self.config.input_rate
-
-            if not can_listen:
-                self._vad.reset_turn()
-                pre_roll.clear()
-                pre_roll_ms = 0.0
-                continue
 
             was_active = self._vad.speech_active
             if not was_active:
@@ -383,6 +401,7 @@ class RealtimeRobotSession:
             if decision.started:
                 if assistant_audio_active:
                     await self._interrupt_assistant()
+                self.fsm.transition(SessionState.USER_SPEAKING, reason="vad_started")
                 self.motion.set_listening_enabled(True)
                 self.status.record_motion(
                     "listening_nod",
@@ -417,8 +436,8 @@ class RealtimeRobotSession:
                 self.status.record_audio_sent()
 
             if decision.stopped:
-                self._input_enabled = False
-                self._response_active = True
+                self.fsm.transition(SessionState.WAITING_RESPONSE, reason="turn_committed")
+                self._response_generation_done = False
                 self.motion.set_listening_enabled(False)
                 self.status.record_motion(
                     "listening_nod",
@@ -607,6 +626,7 @@ class RealtimeRobotSession:
             self.status.record_realtime_event(event_type)
             if event_type == "session.updated":
                 self.status.clear_error()
+                self.fsm.transition(SessionState.LISTENING, reason="session_updated")
                 self.status.set_phase(
                     "listening",
                     self._listening_detail(connected=True)
@@ -618,7 +638,8 @@ class RealtimeRobotSession:
                 )
                 if not self._greeting_sent:
                     self._greeting_sent = True
-                    self._response_active = True
+                    self.fsm.transition(SessionState.WAITING_RESPONSE, reason="greeting_requested")
+                    self._response_generation_done = False
                     await self.connection.response.create(
                         response={
                             "instructions": greeting_instructions(self._current_language()),
@@ -656,8 +677,6 @@ class RealtimeRobotSession:
                 self.motion.set_listening_enabled(False)
                 self.motion.set_speaking_enabled(False)
                 self.motion.set_idle_enabled(False)
-                self._response_active = True
-                self._input_enabled = False
                 response = getattr(event, "response", None)
                 response_id = getattr(response, "id", None)
                 self._current_response_id = str(response_id) if response_id else None
@@ -683,6 +702,7 @@ class RealtimeRobotSession:
                 now = time.monotonic()
                 duration = pcm.size / self.config.output_rate
                 self._speaker_busy_until = max(now, self._speaker_busy_until) + duration
+                self.fsm.transition(SessionState.ASSISTANT_SPEAKING, reason="first_audio_received")
                 self.status.set_phase(
                     "assistant_speaking",
                     "Reachyが話しています",
@@ -716,10 +736,8 @@ class RealtimeRobotSession:
                 was_interrupted = bool(
                     response_id and response_id in self._interrupted_response_ids
                 )
-                if response_id == self._current_response_id:
-                    self._response_active = False
+                self._response_generation_done = True
                 if was_interrupted:
-                    self._input_enabled = True
                     if self._vad.speech_active:
                         self.status.set_phase(
                             "user_speaking",
@@ -730,18 +748,12 @@ class RealtimeRobotSession:
                 else:
                     has_tool_outputs = bool(self._pending_tool_outputs)
                     if has_tool_outputs:
+                        self.fsm.transition(SessionState.TOOL_EXECUTION, reason="tool_outputs_pending")
                         await self._flush_tool_outputs()
                     else:
-                        self._response_active = False
-                        self._input_enabled = True
-                        if self._assistant_audio_active():
-                            self.status.set_phase(
-                                "assistant_speaking",
-                                "Reachyが話しています（割り込み可能）",
-                                connected=True,
-                                detail_key="detail_assistant_interruptible",
-                            )
-                        else:
+                        now = time.monotonic()
+                        if not self._assistant_audio_active(now):
+                            self.fsm.transition(SessionState.LISTENING, reason="response_completed")
                             self.motion.set_speaking_enabled(False)
                             self.status.set_phase(
                                 "listening",
@@ -750,6 +762,13 @@ class RealtimeRobotSession:
                                 event=True,
                                 detail_key="detail_listening",
                                 detail_params=self._listening_params(),
+                            )
+                        else:
+                            self.status.set_phase(
+                                "assistant_speaking",
+                                "Reachyが話しています（割り込み可能）",
+                                connected=True,
+                                detail_key="detail_assistant_interruptible",
                             )
                 if response_status and response_status not in {"completed", "cancelled"}:
                     details = getattr(response, "status_details", response_status)
@@ -781,8 +800,8 @@ class RealtimeRobotSession:
             await self.connection.conversation.item.create(
                 item={"type": "function_call_output", "call_id": call_id, "output": output}
             )
-        self._response_active = True
-        self._input_enabled = False
+        self.fsm.transition(SessionState.WAITING_RESPONSE, reason="tool_outputs_submitted")
+        self._response_generation_done = False
         await self.connection.response.create(
             response={
                 "instructions": response_instructions(self._current_language()),
@@ -792,9 +811,7 @@ class RealtimeRobotSession:
         self.status.record_response_request()
 
     def _assistant_audio_active(self, now: float | None = None) -> bool:
-        if self._response_active:
-            return True
-        return (now if now is not None else time.monotonic()) < self._speaker_busy_until
+        return self.fsm.generation_active() or (now if now is not None else time.monotonic()) < self._speaker_busy_until
 
     def _played_audio_end_ms(self) -> int | None:
         if self._current_audio_item_id is None:
@@ -805,15 +822,14 @@ class RealtimeRobotSession:
         return int(min(self._playback_pushed_ms, elapsed_ms))
 
     async def _interrupt_assistant(self) -> None:
+        generation_active = self.fsm.generation_active()
+        self.fsm.transition(SessionState.INTERRUPTING, reason="barge_in")
         response_id = self._current_response_id
         item_id = self._current_audio_item_id
         audio_end_ms = self._played_audio_end_ms()
-        generation_active = self._response_active
 
         if response_id is not None:
             self._interrupted_response_ids.add(response_id)
-        self._response_active = False
-        self._input_enabled = True
         self._pending_tool_outputs.clear()
         self.motion.stop_current()
 
@@ -834,6 +850,7 @@ class RealtimeRobotSession:
 
         self._speaker_busy_until = time.monotonic()
         self.status.record_interruption(audio_end_ms)
+        self.fsm.transition(SessionState.USER_SPEAKING, reason="user_turn_continues")
 
     async def _clear_playback(self) -> None:
         while True:
