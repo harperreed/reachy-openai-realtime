@@ -44,26 +44,42 @@
 Append this test to `tests/test_main_logging.py`:
 
 ```python
-def test_attach_file_logging_redacts_message_and_exception_keys(monkeypatch, tmp_path) -> None:
+def test_attach_file_logging_redacts_message_keys(monkeypatch, tmp_path) -> None:
     fresh = tmp_path / "apps" / "reachy_openai_realtime"
     monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(fresh))
     message_key = "sk-test-message-abcdefghijklmnop"
-    exception_key = "sk-test-exception-abcdefghijklmnop"
 
     handler = attach_file_logging()
     logger = logging.getLogger("application-log-redaction-test")
     logger.setLevel(logging.INFO)
     try:
         logger.error("message key: %s", message_key)
+        handler.flush()
+        contents = log_path().read_text(encoding="utf-8")
+        assert message_key not in contents
+        assert "sk-***" in contents
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+
+
+def test_attach_file_logging_redacts_exception_keys(monkeypatch, tmp_path) -> None:
+    fresh = tmp_path / "apps" / "reachy_openai_realtime"
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(fresh))
+    exception_key = "sk-test-exception-abcdefghijklmnop"
+
+    handler = attach_file_logging()
+    logger = logging.getLogger("application-log-redaction-test")
+    logger.setLevel(logging.INFO)
+    try:
         try:
             raise RuntimeError(f"exception key: {exception_key}")
         except RuntimeError:
             logger.exception("request failed")
         handler.flush()
         contents = log_path().read_text(encoding="utf-8")
-        assert message_key not in contents
         assert exception_key not in contents
-        assert contents.count("sk-***") >= 2
+        assert "sk-***" in contents
     finally:
         logging.getLogger().removeHandler(handler)
         handler.close()
@@ -74,10 +90,13 @@ def test_attach_file_logging_redacts_message_and_exception_keys(monkeypatch, tmp
 Run:
 
 ```bash
-uv run pytest tests/test_main_logging.py::test_attach_file_logging_redacts_message_and_exception_keys -v
+uv run pytest \
+  tests/test_main_logging.py::test_attach_file_logging_redacts_message_keys \
+  tests/test_main_logging.py::test_attach_file_logging_redacts_exception_keys \
+  -v
 ```
 
-Expected: FAIL because both original keys appear in `application.log`.
+Expected: both tests FAIL because each original key appears in `application.log`.
 
 - [ ] **Step 3: Add the minimal formatter**
 
@@ -114,7 +133,7 @@ uv run pytest tests/test_main_logging.py tests/test_observability_events.py -v
 uv run ruff check reachy_openai_realtime/main.py tests/test_main_logging.py
 ```
 
-Expected: both commands exit 0; the two application-log tests and event-redaction tests pass.
+Expected: both commands exit 0; the three application-log tests and event-redaction tests pass.
 
 - [ ] **Step 5: Commit the redaction change**
 
