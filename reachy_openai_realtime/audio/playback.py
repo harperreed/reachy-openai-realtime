@@ -143,6 +143,10 @@ class SpeakerWorker:
             except queue.Empty:
                 return
 
+    def alive(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
     def stalled(self, threshold_seconds: float) -> bool:
         return self._inbox.full() and time.monotonic() - self.last_write_at > threshold_seconds
 

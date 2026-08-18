@@ -68,6 +68,16 @@ def test_clear_returns_dropped_ms() -> None:
     assert buffer.queued_ms() == 0.0
 
 
+def test_speaker_worker_alive_after_start_not_alive_after_close() -> None:
+    media = FakeSpeakerMedia()
+    worker = SpeakerWorker(media)
+    assert worker.alive() is False
+    worker.start()
+    assert worker.alive() is True
+    worker.close()
+    assert worker.alive() is False
+
+
 def test_speaker_worker_writes_in_order_and_reports_writes() -> None:
     media = FakeSpeakerMedia()
     writes: list[float] = []

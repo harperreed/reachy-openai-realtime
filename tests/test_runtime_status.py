@@ -104,6 +104,40 @@ def test_record_error_emits_recorder_event(tmp_path) -> None:
     assert "network timeout" in error_events[0]["message"]
 
 
+def test_health_defaults_unhealthy() -> None:
+    status = RuntimeStatus()
+    assert status.health(now=100.0) == {
+        "ok": False, "realtime": False, "microphone": False,
+        "speaker": False, "motion": False, "camera": False,
+    }
+
+
+def test_health_ok_tracks_critical_components_only() -> None:
+    status = RuntimeStatus()
+    status.set_phase("connected", "ok", connected=True)
+    status.set_component_health("microphone", True, now=100.0)
+    status.set_component_health("speaker", True, now=100.0)
+    health = status.health(now=101.0)
+    assert health["ok"] is True
+    assert health["motion"] is False and health["camera"] is False  # reported, not gating
+
+
+def test_health_periodic_component_goes_stale_after_10s() -> None:
+    status = RuntimeStatus()
+    status.set_phase("connected", "ok", connected=True)
+    status.set_component_health("microphone", True, now=100.0)
+    status.set_component_health("speaker", True, now=100.0)
+    assert status.health(now=109.0)["ok"] is True
+    stale = status.health(now=111.0)
+    assert stale["microphone"] is False and stale["ok"] is False
+
+
+def test_health_static_component_never_expires() -> None:
+    status = RuntimeStatus()
+    status.set_component_health("motion", True, expires=False, now=100.0)
+    assert status.health(now=10_000.0)["motion"] is True
+
+
 def test_snapshot_includes_cumulative_response_usage() -> None:
     status = RuntimeStatus()
     status.record_usage(

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections import Counter, deque
 from datetime import datetime, timezone
 from typing import Any
+
+_HEALTH_STALE_SECONDS = 10.0
 
 from .observability.events import EventRecorder, redact_secrets
 from .observability.metrics import MetricsRegistry
@@ -54,6 +57,7 @@ class RuntimeStatus:
         self._last_realtime_event: str | None = None
         self._realtime_events: deque[dict[str, str]] = deque(maxlen=100)
         self._updated_at = _now()
+        self._component_health: dict[str, tuple[bool, float | None]] = {}
         self._events: deque[dict[str, Any]] = deque(maxlen=40)
         self._append_event_locked(
             "info",
@@ -335,6 +339,38 @@ class RuntimeStatus:
             )
             self._updated_at = _now()
         self.record_event("status.message", level=level, message=safe, key=key)
+
+    def set_component_health(
+        self, component: str, healthy: bool, *, expires: bool = True, now: float | None = None
+    ) -> None:
+        stamp = (time.monotonic() if now is None else now) if expires else None
+        with self._lock:
+            self._component_health[component] = (healthy, stamp)
+
+    def _component_ok_locked(self, component: str, now: float) -> bool:
+        entry = self._component_health.get(component)
+        if entry is None:
+            return False
+        healthy, stamp = entry
+        if stamp is not None and now - stamp > _HEALTH_STALE_SECONDS:
+            return False
+        return healthy
+
+    def health(self, now: float | None = None) -> dict[str, bool]:
+        """Component health per hardening spec §23. ok tracks the critical
+        conversational path only; motion/camera are reported, never gating."""
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            realtime = self._connected
+            microphone = self._component_ok_locked("microphone", current)
+            speaker = self._component_ok_locked("speaker", current)
+            motion = self._component_ok_locked("motion", current)
+            camera = self._component_ok_locked("camera", current)
+        return {
+            "ok": realtime and microphone and speaker,
+            "realtime": realtime, "microphone": microphone, "speaker": speaker,
+            "motion": motion, "camera": camera,
+        }
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

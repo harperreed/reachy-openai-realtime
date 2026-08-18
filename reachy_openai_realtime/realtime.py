@@ -251,6 +251,8 @@ class RealtimeRobotSession:
             self._speaker.close()
             self._capture.close()
             self._capture = None
+            self.status.set_component_health("microphone", False, expires=False)
+            self.status.set_component_health("speaker", False, expires=False)
 
     async def _sleep_unless_stopped(self, stop_event: Any, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -458,6 +460,8 @@ class RealtimeRobotSession:
                     doa_speech_detected=doa_speech_detected,
                     doa_angle_degrees=doa_angle_degrees,
                 )
+                self.status.set_component_health("microphone", self._capture.frame_age_seconds() < 5.0)
+                self.status.set_component_health("speaker", self._speaker.alive())
                 last_level_update = now
             if (
                 process_turn

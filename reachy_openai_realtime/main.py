@@ -9,6 +9,7 @@ from importlib.metadata import PackageNotFoundError, version
 from logging.handlers import RotatingFileHandler
 
 from fastapi import HTTPException, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from reachy_mini import ReachyMini, ReachyMiniApp
 
@@ -105,6 +106,10 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
         @self.settings_app.get("/api/status")
         def get_status() -> dict[str, object]:
             return self.runtime_status.snapshot()
+
+        @self.settings_app.get("/api/health")
+        def api_health() -> JSONResponse:
+            return JSONResponse(self.status.health())
 
         @self.settings_app.get("/api/diagnostics")
         def get_diagnostics() -> dict[str, object]:
@@ -233,6 +238,10 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 "restart_required": self._session_started,
             }
 
+    @property
+    def status(self) -> RuntimeStatus:
+        return self.runtime_status
+
     def _current_language(self) -> str:
         with self._language_lock:
             return self._language
@@ -268,6 +277,14 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 "カメラは利用できません",
                 key="event_camera_unavailable",
             )
+        # Camera health: disabled→True (not in use is not unhealthy); enabled+available→True;
+        # enabled+unavailable→False. At startup _camera_enabled is always False, so this
+        # evaluates to True regardless of availability. expires=False: static, set once.
+        self.runtime_status.set_component_health(
+            "camera",
+            self._camera_available if self._camera_enabled else True,
+            expires=False,
+        )
         if not os.getenv("OPENAI_API_KEY"):
             logger.warning("Open the app settings page and enter OPENAI_API_KEY")
             self.runtime_status.set_phase(
@@ -298,6 +315,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             detail_key="detail_starting_audio",
         )
         motion.start()
+        self.runtime_status.set_component_health("motion", True, expires=False)
         reachy_mini.media.start_recording()
         reachy_mini.media.start_playing()
         audio_started_at = time.monotonic()
@@ -371,6 +389,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             finally:
                 reachy_mini.media.stop_playing()
                 motion.close()
+                self.runtime_status.set_component_health("motion", False, expires=False)
                 with self._camera_lock:
                     self._camera_enabled = False
                     self._camera_available = False
