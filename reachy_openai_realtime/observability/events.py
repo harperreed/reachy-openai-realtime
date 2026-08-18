@@ -21,6 +21,10 @@ def redact_secrets(text: str) -> str:
     return _SECRET_PATTERN.sub("sk-***", text)
 
 
+def _redact_default(obj: object) -> str:
+    return redact_secrets(str(obj))
+
+
 def _redact_value(value: Any) -> Any:
     if isinstance(value, str):
         return redact_secrets(value)
@@ -69,7 +73,7 @@ class EventRecorder:
                 # A half-initialized session must not stop the flight recorder.
                 continue
         entry.update(_redact_value(fields))
-        line = json.dumps(entry, ensure_ascii=False, default=str)
+        line = json.dumps(entry, ensure_ascii=False, default=_redact_default)
         with self._lock:
             try:
                 self._write_locked(line)

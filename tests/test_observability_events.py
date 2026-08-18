@@ -94,6 +94,16 @@ def test_record_is_thread_safe(tmp_path) -> None:
     assert len(read_lines(path)) == 200
 
 
+def test_record_redacts_objects_stringified_by_json_default(tmp_path) -> None:
+    recorder = EventRecorder(tmp_path / "events.jsonl")
+    secret = "sk-test-abcdefghijklmnopqrstuvwxyz"
+    recorder.record("test.event", error=RuntimeError(f"auth failed for {secret}"))
+
+    written = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
+    assert secret not in written
+    assert redact_secrets(secret) in written
+
+
 def test_provider_exception_does_not_break_recording(tmp_path) -> None:
     recorder = EventRecorder(tmp_path / "events.jsonl")
 
