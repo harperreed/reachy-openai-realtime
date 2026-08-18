@@ -9,7 +9,7 @@ def read_lines(path):
 
 
 def test_redact_secrets_masks_api_keys() -> None:
-    assert redact_secrets("key sk-proj-abcdef1234567890 leaked") == "key sk-*** leaked"
+    assert redact_secrets("key sk-test-proj-abcdef1234567890 leaked") == "key sk-*** leaked"
     assert redact_secrets("no secrets here") == "no secrets here"
 
 
@@ -40,12 +40,12 @@ def test_record_redacts_nested_field_values(tmp_path) -> None:
     recorder = EventRecorder(tmp_path / "events.jsonl")
     recorder.record(
         "realtime.error",
-        message="auth failed for sk-proj-abcdef1234567890",
-        detail={"headers": ["Bearer sk-proj-abcdef1234567890"]},
+        message="auth failed for sk-test-proj-abcdef1234567890",
+        detail={"headers": ["Bearer sk-test-proj-abcdef1234567890"]},
     )
     recorder.close()
     raw = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
-    assert "sk-proj-abcdef1234567890" not in raw
+    assert "sk-test-proj-abcdef1234567890" not in raw
     assert "sk-***" in raw
 
 

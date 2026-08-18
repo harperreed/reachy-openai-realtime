@@ -13,14 +13,14 @@ def test_add_event_mirrors_into_recorder(tmp_path) -> None:
     status.attach_recorder(recorder)
     # NOTE: add_event(message, level) — level is second; brief had args swapped (typo),
     # intent is: message with a secret, level="info".
-    status.add_event("connection ready sk-proj-abcdef1234567890", "info")
+    status.add_event("connection ready sk-test-proj-abcdef1234567890", "info")
     recorder.close()
 
     lines = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     mirrored = [entry for entry in lines if entry["event"] == "status.message"]
     assert mirrored
     assert "sk-***" in mirrored[0]["message"]
-    assert "sk-proj-abcdef1234567890" not in json.dumps(lines)
+    assert "sk-test-proj-abcdef1234567890" not in json.dumps(lines)
 
 
 def test_snapshot_includes_metrics() -> None:
