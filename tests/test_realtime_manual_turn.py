@@ -11,6 +11,7 @@ from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
+from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.vad import EnergyTurnDetector
 
 
@@ -209,6 +210,7 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     session._camera_add_events = {}
     session._camera_delete_events = {}
     session._vad = EnergyTurnDetector()
+    session.watchdog = DeadlineWatchdog()
 
     asyncio.run(session._record_loop(stop_event))
 
@@ -238,6 +240,7 @@ def test_camera_image_uses_data_uri_and_replaces_previous_image() -> None:
     session._pending_camera_items = {}
     session._camera_add_events = {}
     session._camera_delete_events = {}
+    session.watchdog = DeadlineWatchdog()
 
     assert asyncio.run(session._capture_and_send_camera_image()) is True
     first = session.connection.conversation.item.created[0]["item"]
@@ -279,6 +282,7 @@ def test_camera_protocol_error_is_logged_without_marking_connection_failed() -> 
     session._pending_camera_items = {}
     session._camera_add_events = {}
     session._camera_delete_events = {}
+    session.watchdog = DeadlineWatchdog()
 
     assert asyncio.run(session._capture_and_send_camera_image()) is True
     event_id = session.connection.conversation.item.created[0]["event_id"]
@@ -315,6 +319,7 @@ def test_barge_in_cancels_clears_and_truncates_at_played_audio() -> None:
     session._playback_started_at = time.monotonic() - 1.5
     session._playback_pushed_ms = 4_000.0
     session._interrupted_response_ids = RecentIds()
+    session.watchdog = DeadlineWatchdog()
 
     asyncio.run(session._interrupt_assistant())
 
@@ -357,6 +362,7 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session._playback_pushed_ms = 2_000.0
     session._interrupted_response_ids = RecentIds()
     session._vad = EnergyTurnDetector()
+    session.watchdog = DeadlineWatchdog()
 
     asyncio.run(session._record_loop(stop_event))
 

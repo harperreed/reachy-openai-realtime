@@ -8,6 +8,7 @@ from conftest import drive_fsm
 from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
+from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.vad import EnergyTurnDetector
 
 
@@ -47,6 +48,9 @@ def make_dirty_session() -> RealtimeRobotSession:
     session._camera_delete_events = {}
     session._vad = EnergyTurnDetector()
     session._vad.speech_active = True
+    wd = DeadlineWatchdog()
+    wd.arm("response_create")
+    session.watchdog = wd
     return session
 
 
@@ -73,6 +77,7 @@ def test_reset_connection_state_clears_spec_checklist() -> None:
     assert session._last_camera_item_id is None
     assert session._response_generation_done is True
     assert session._vad.speech_active is False
+    assert session.watchdog.expired() is None  # watchdog.clear() was called
 
 
 def test_stale_epoch_tool_outputs_are_dropped_by_flush_filter() -> None:

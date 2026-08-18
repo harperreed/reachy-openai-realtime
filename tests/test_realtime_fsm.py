@@ -9,6 +9,7 @@ from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
+from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.vad import EnergyTurnDetector
 
 import numpy as np
@@ -48,6 +49,7 @@ def make_session(frames, stop_event) -> RealtimeRobotSession:
     session._camera_add_events = {}
     session._camera_delete_events = {}
     session._vad = EnergyTurnDetector()
+    session.watchdog = DeadlineWatchdog()
     return session
 
 

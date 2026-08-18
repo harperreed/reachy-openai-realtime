@@ -39,6 +39,7 @@ from .motion import TOOL_DEFINITIONS, MotionController
 from .runtime_status import RuntimeStatus, safe_message
 from .session.fsm import SessionState, SessionStateMachine
 from .session.recovery import BackoffPolicy, ErrorClass, SessionOutcome, classify_connection_error
+from .session.watchdog import DeadlineWatchdog, WatchdogTimeout
 from .vad import EnergyTurnDetector
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,7 @@ class RealtimeRobotSession:
         self._camera_delete_events: dict[str, str] = {}
         self._doa_poller: DoAPoller | None = None
         self._vad = EnergyTurnDetector()
+        self.watchdog = DeadlineWatchdog()
 
     def _on_fsm_transition(self, old_state: SessionState, new_state: SessionState, reason: str) -> None:
         self.status.record_event(
@@ -224,6 +226,7 @@ class RealtimeRobotSession:
             self._pending_camera_items.clear()
             self._camera_add_events.clear()
             self._camera_delete_events.clear()
+            self.watchdog.arm("session_update")
             await connection.session.update(session=self._session_config())
             logger.info("Realtime session connected: model=%s voice=%s", self.config.model, self.config.voice)
 
@@ -236,6 +239,7 @@ class RealtimeRobotSession:
                 asyncio.create_task(self._record_loop(stop_event), name="record-loop"),
                 asyncio.create_task(self._playback_loop(stop_event), name="playback-loop"),
                 asyncio.create_task(self._event_loop(stop_event), name="event-loop"),
+                asyncio.create_task(self._watchdog_loop(), name="watchdog-loop"),
             ]
             try:
                 await asyncio.gather(*tasks)
@@ -491,14 +495,17 @@ class RealtimeRobotSession:
                 # Ensure the image item is in the conversation before the audio
                 # message is committed and response generation starts.
                 await self._finish_camera_capture()
+                self.watchdog.arm("input_append")
                 await self.connection.input_audio_buffer.commit()
                 self.status.record_audio_commit()
+                self.watchdog.arm("response_create")
                 await self.connection.response.create(
                     response={
                         "instructions": response_instructions(self._current_language()),
                         "output_modalities": ["audio"],
                     }
                 )
+                self.watchdog.disarm("input_append")
                 self.status.record_response_request()
 
     async def _append_input_audio(self, encoded: str) -> None:
@@ -559,6 +566,7 @@ class RealtimeRobotSession:
             self._pending_camera_items[item_id] = len(jpeg)
             self._camera_add_events[event_id] = item_id
             self.status.record_camera_image_sending()
+            self.watchdog.arm("camera_item")
             await self.connection.conversation.item.create(
                 item={
                     "id": item_id,
@@ -579,6 +587,7 @@ class RealtimeRobotSession:
         except Exception as exc:
             if item_id is not None:
                 self._pending_camera_items.pop(item_id, None)
+                self.watchdog.disarm("camera_item")
             if event_id is not None:
                 self._camera_add_events.pop(event_id, None)
             logger.warning("Failed to send speech camera image", exc_info=True)
@@ -594,6 +603,7 @@ class RealtimeRobotSession:
         byte_count = self._pending_camera_items.pop(item_id, None)
         if byte_count is None:
             return
+        self.watchdog.disarm("camera_item")
         for event_id, pending_item_id in list(self._camera_add_events.items()):
             if pending_item_id == item_id:
                 self._camera_add_events.pop(event_id, None)
@@ -622,6 +632,7 @@ class RealtimeRobotSession:
         item_id = self._camera_add_events.pop(client_event_id, None)
         if item_id is not None:
             self._pending_camera_items.pop(item_id, None)
+            self.watchdog.disarm("camera_item")
             self.status.record_camera_send_error(getattr(error, "message", error))
             return True
         deleted_item_id = self._camera_delete_events.pop(client_event_id, None)
@@ -656,6 +667,7 @@ class RealtimeRobotSession:
             event_type = event.type
             self.status.record_realtime_event(event_type)
             if event_type == "session.updated":
+                self.watchdog.disarm("session_update")
                 self.status.clear_error()
                 self.fsm.transition(SessionState.LISTENING, reason="session_updated")
                 self.status.set_phase(
@@ -671,6 +683,7 @@ class RealtimeRobotSession:
                     self._greeting_sent = True
                     self.fsm.transition(SessionState.WAITING_RESPONSE, reason="greeting_requested")
                     self._response_generation_done = False
+                    self.watchdog.arm("response_create")
                     await self.connection.response.create(
                         response={
                             "instructions": greeting_instructions(self._current_language()),
@@ -705,6 +718,9 @@ class RealtimeRobotSession:
                     if item_id == deleted_item_id:
                         self._camera_delete_events.pop(event_id, None)
             elif event_type == "response.created":
+                self.watchdog.disarm("response_create")
+                self.watchdog.disarm("tool_response")
+                self.watchdog.arm("first_output")
                 self.motion.set_listening_enabled(False)
                 self.motion.set_speaking_enabled(False)
                 self.motion.set_idle_enabled(False)
@@ -726,6 +742,7 @@ class RealtimeRobotSession:
                 response_id = str(event.response_id)
                 if response_id in self._interrupted_response_ids:
                     continue
+                self.watchdog.disarm("first_output")
                 pcm = np.frombuffer(base64.b64decode(event.delta), dtype=np.int16)
                 self._current_audio_item_id = str(event.item_id)
                 self._current_audio_content_index = int(event.content_index)
@@ -755,8 +772,11 @@ class RealtimeRobotSession:
                     self._speaker_busy_until += 0.3
             elif event_type == "response.function_call_arguments.done":
                 if str(event.response_id) not in self._interrupted_response_ids:
+                    self.watchdog.disarm("first_output")
                     await self._handle_tool_call(event)
             elif event_type == "response.done":
+                self.watchdog.disarm("first_output")
+                self.watchdog.disarm("response_cancel")
                 response = getattr(event, "response", None)
                 response_id_value = getattr(response, "id", None)
                 response_id = str(response_id_value) if response_id_value else None
@@ -835,12 +855,14 @@ class RealtimeRobotSession:
             )
         self.fsm.transition(SessionState.WAITING_RESPONSE, reason="tool_outputs_submitted")
         self._response_generation_done = False
+        self.watchdog.arm("response_create")
         await self.connection.response.create(
             response={
                 "instructions": response_instructions(self._current_language()),
                 "output_modalities": ["audio"],
             }
         )
+        self.watchdog.arm("tool_response")
         self.status.record_response_request()
 
     def _assistant_audio_active(self, now: float | None = None) -> bool:
@@ -872,6 +894,7 @@ class RealtimeRobotSession:
                 await self.connection.response.cancel()
             else:
                 await self.connection.response.cancel(response_id=response_id)
+            self.watchdog.arm("response_cancel")
 
         await self._clear_playback()
 
@@ -889,8 +912,19 @@ class RealtimeRobotSession:
         self.status.record_interruption(audio_end_ms)
         self.fsm.transition(SessionState.USER_SPEAKING, reason="user_turn_continues")
 
+    async def _watchdog_loop(self) -> None:
+        try:
+            await self.watchdog.watch()
+        except WatchdogTimeout as exc:
+            self.status.record_event(
+                "watchdog.triggered", operation=exc.operation, timeout_seconds=exc.timeout_seconds
+            )
+            self.status.add_event("warning", f"protocol watchdog: {exc.operation} timed out")
+            raise
+
     async def reset_connection_state(self) -> None:
         """Spec §4: a reconnect must never inherit partially active response state."""
+        self.watchdog.clear()
         if self._camera_capture_task is not None:
             self._camera_capture_task.cancel()
             self._camera_capture_task = None
