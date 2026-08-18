@@ -56,9 +56,9 @@ Reachy Mini SDK (verified 2026-08-17, pollen-robotics/reachy_mini source + issue
     - `record(self, event: str, **fields: Any) -> None` — thread-safe, never raises
     - `close(self) -> None` — idempotent
 
-- [ ] **Step 1: Check package discovery.** Read `pyproject.toml`. If it declares an explicit package list (e.g. `[tool.setuptools] packages = [...]`), add `reachy_openai_realtime.observability` (and note that Tasks 4/9 add `session`/`audio`). If it uses auto-discovery (no explicit list, or `packages.find`), no change needed — subpackages with `__init__.py` are found automatically.
+- [x] **Step 1: Check package discovery.** Read `pyproject.toml`. If it declares an explicit package list (e.g. `[tool.setuptools] packages = [...]`), add `reachy_openai_realtime.observability` (and note that Tasks 4/9 add `session`/`audio`). If it uses auto-discovery (no explicit list, or `packages.find`), no change needed — subpackages with `__init__.py` are found automatically.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 ```python
 # tests/test_observability_events.py
@@ -162,12 +162,12 @@ def test_provider_exception_does_not_break_recording(tmp_path) -> None:
     assert entry["session_state"] == "DISCONNECTED"
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_observability_events.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'reachy_openai_realtime.observability'`
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 Create empty `reachy_openai_realtime/observability/__init__.py`, then:
 
@@ -283,12 +283,12 @@ class EventRecorder:
         self._path.replace(self._path.with_name(f"{self._path.name}.1"))
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_observability_events.py -v`
 Expected: all PASS
 
-- [ ] **Step 6: Lint and commit**
+- [x] **Step 6: Lint and commit**
 
 ```bash
 uv run ruff check .
@@ -310,7 +310,7 @@ git commit -m "feat: add JSONL event recorder with redaction and rotation"
   - `class LatencyStat: __init__(self, window: int = 200); record(self, value_ms: float) -> None; snapshot(self) -> dict[str, float | int]` — snapshot keys exactly `count,min,max,mean,p50,p95`; `count` is lifetime, the rest cover the recent window.
   - `class MetricsRegistry: observe_ms(self, name: str, value_ms: float) -> None; increment(self, name: str, amount: int = 1) -> None; set_gauge(self, name: str, value: float) -> None; snapshot(self) -> dict[str, Any]` — snapshot shape `{"latency": {name: stat_dict}, "counters": {name: int}, "gauges": {name: float}}`. All methods thread-safe.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_observability_metrics.py
@@ -371,12 +371,12 @@ def test_registry_is_thread_safe() -> None:
     assert registry.snapshot()["counters"]["ticks"] == 4000
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_observability_metrics.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # reachy_openai_realtime/observability/metrics.py
@@ -452,12 +452,12 @@ class MetricsRegistry:
             }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_observability_metrics.py -v`
 Expected: all PASS
 
-- [ ] **Step 5: Lint and commit**
+- [x] **Step 5: Lint and commit**
 
 ```bash
 uv run ruff check .
@@ -485,7 +485,7 @@ git commit -m "feat: add metrics registry with latency percentiles"
   - `RuntimeStatus.add_event(...)`, `set_phase(...)`, and `record_error(...)` mirror into the recorder as events `status.message`, `status.phase`, `status.error` when a recorder is attached. Explicit taxonomy events (`fsm.transition`, `realtime.*`, …) are recorded at their source sites in later tasks, not synthesized here.
 - `RuntimeStatus.safe_message` keeps its existing name/signature but now delegates to `redact_secrets`; delete the duplicated `_SECRET_PATTERN` from `runtime_status.py` (one source of truth).
 
-- [ ] **Step 1: Write the failing tests.** Add to `tests/test_settings.py`:
+- [x] **Step 1: Write the failing tests.** Add to `tests/test_settings.py`:
 
 ```python
 def test_events_and_log_paths_live_in_config_dir(monkeypatch, tmp_path) -> None:
@@ -535,12 +535,12 @@ def test_status_without_recorder_still_works() -> None:
     assert status.snapshot()["metrics"]["counters"] == {}
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_runtime_status.py tests/test_settings.py -v`
 Expected: new tests FAIL (`AttributeError: events_path` / `attach_recorder` / no `metrics` key)
 
-- [ ] **Step 3: Implement settings paths.** In `settings.py`, next to `usage_path()`:
+- [x] **Step 3: Implement settings paths.** In `settings.py`, next to `usage_path()`:
 
 ```python
 def events_path() -> Path:
@@ -551,7 +551,7 @@ def log_path() -> Path:
     return config_dir() / "application.log"
 ```
 
-- [ ] **Step 4: Implement RuntimeStatus wiring.** In `runtime_status.py`:
+- [x] **Step 4: Implement RuntimeStatus wiring.** In `runtime_status.py`:
   - Replace the local `_SECRET_PATTERN` + body of `safe_message` with `from .observability.events import redact_secrets` and delegate (keep the method so existing call sites don't change).
   - In `__init__`: `self.metrics = MetricsRegistry()` and `self._recorder: EventRecorder | None = None` (import `MetricsRegistry` from `.observability.metrics`).
   - `def attach_recorder(self, recorder): self._recorder = recorder`
@@ -569,7 +569,7 @@ def record_event(self, event: str, **fields: object) -> None:
   - `record_error(...)` → `self.record_event("status.error", message=<safe message>)`.
   - In `snapshot()`, add `"metrics": self.metrics.snapshot()` to the returned dict.
 
-- [ ] **Step 5: Implement main.py wiring.** In `ReachyOpenaiRealtime.run()` (before the API-key wait loop):
+- [x] **Step 5: Implement main.py wiring.** In `ReachyOpenaiRealtime.run()` (before the API-key wait loop):
 
 ```python
 from logging.handlers import RotatingFileHandler
@@ -595,12 +595,12 @@ logging.getLogger().removeHandler(file_handler)
 
 Store the recorder on `self` (`self._recorder = recorder`) so the session-construction site in the run loop can pass it onward in later tasks. Keep exact insertion points consistent with the existing structure of `run()` — the recorder must exist before the first `status.add_event` call you want mirrored.
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `uv run pytest -v`
 Expected: all PASS (existing RuntimeStatus tests unaffected — recorder is optional)
 
-- [ ] **Step 7: Lint and commit**
+- [x] **Step 7: Lint and commit**
 
 ```bash
 uv run ruff check .
@@ -645,7 +645,7 @@ RECOVERING         → CONNECTING | DISCONNECTED | STOPPING   (no RECOVERING→R
 STOPPING           → DISCONNECTED                            (STOPPING may not re-enter RECOVERING)
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_session_fsm.py
@@ -740,12 +740,12 @@ def test_listener_exception_does_not_block_transition() -> None:
     assert fsm.state is SessionState.CONNECTING
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_session_fsm.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create empty `reachy_openai_realtime/session/__init__.py`, then:
 
@@ -856,12 +856,12 @@ class SessionStateMachine:
         return self._state in _GENERATION_ACTIVE
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_session_fsm.py -v`
 Expected: all PASS
 
-- [ ] **Step 5: Lint and commit**
+- [x] **Step 5: Lint and commit**
 
 ```bash
 uv run ruff check .
@@ -919,7 +919,7 @@ run() on stop_event:          STOPPING reason="stop_requested", then DISCONNECTE
 
 `_response_generation_done` starts `True` in `__init__`. It exists because `response.done` can arrive while audio is still draining — the FSM stays `ASSISTANT_SPEAKING` until playback finishes, and this flag is how the drain check knows the server is done.
 
-- [ ] **Step 1: Map every read/write site.** Run and list results before editing:
+- [x] **Step 1: Map every read/write site.** Run and list results before editing:
 
 ```bash
 rg -n "_input_enabled|_response_active" reachy_openai_realtime tests
@@ -927,7 +927,7 @@ rg -n "_input_enabled|_response_active" reachy_openai_realtime tests
 
 Every hit must be accounted for by the mapping table above. If you find a site the table doesn't cover, stop and reconcile it against the transition-sites list before proceeding (do not invent a fourth mapping silently).
 
-- [ ] **Step 2: Write the conftest helper and failing tests**
+- [x] **Step 2: Write the conftest helper and failing tests**
 
 ```python
 # tests/conftest.py
@@ -1028,12 +1028,12 @@ def test_frames_ignored_while_waiting_for_response() -> None:
 
 (The FakeStopEvent in the second test never gets set by a `response.create`, so add a frame-exhaustion guard exactly like the existing tests rely on: `_record_loop` already exits when `get_audio_sample` returns `None`.)
 
-- [ ] **Step 3: Run new tests to verify they fail**
+- [x] **Step 3: Run new tests to verify they fail**
 
 Run: `uv run pytest tests/test_realtime_fsm.py -v`
 Expected: FAIL (`AttributeError: fsm` / record loop still consults `_input_enabled`)
 
-- [ ] **Step 4: Implement in `realtime.py`.**
+- [x] **Step 4: Implement in `realtime.py`.**
   - `from .session.fsm import SessionState, SessionStateMachine`
   - In `__init__`: delete `self._input_enabled = False` and `self._response_active = False`; add:
 
@@ -1074,7 +1074,7 @@ else:
   - `_interrupt_assistant`: first line `self.fsm.transition(SessionState.INTERRUPTING, reason="barge_in")`, last line `self.fsm.transition(SessionState.USER_SPEAKING, reason="user_turn_continues")`.
   - `run()`/`_run_connection`: add `CONNECTING`/`INITIALIZING`/`RECOVERING`/`STOPPING`/`DISCONNECTED` transitions per the sites list (the reconnect loop itself is rewritten in Task 7 — here, add transitions to the *existing* loop shape without changing retry behavior).
 
-- [ ] **Step 5: Update the existing manual-turn tests.** In `tests/test_realtime_manual_turn.py`, for each test constructing a session by hand:
+- [x] **Step 5: Update the existing manual-turn tests.** In `tests/test_realtime_manual_turn.py`, for each test constructing a session by hand:
   - Add `from conftest import drive_fsm` and `from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine`.
   - Replace `session._input_enabled = True` / `session._response_active = False` with:
 
@@ -1094,12 +1094,12 @@ drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
 
   - `test_barge_in_cancels_clears_and_truncates_at_played_audio` gains one assertion after the existing ones: `assert session.fsm.state is SessionState.USER_SPEAKING`.
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `uv run pytest -v`
 Expected: all PASS, including the untouched camera tests (they never touched the booleans)
 
-- [ ] **Step 7: Lint and commit**
+- [x] **Step 7: Lint and commit**
 
 ```bash
 uv run ruff check .
@@ -1123,7 +1123,7 @@ git commit -m "feat: replace session state booleans with explicit FSM"
   - `RealtimeRobotSession.reset_connection_state() -> None` (async) — the spec §4 checklist, callable any time between connections
   - `_pending_tool_outputs: list[tuple[int, str, str]]` — now `(epoch, call_id, output_json)`; the flush in the `response.done` handler skips entries whose epoch != `self.connection_epoch`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_realtime_reset.py
@@ -1206,12 +1206,12 @@ def test_stale_epoch_tool_outputs_are_dropped_by_flush_filter() -> None:
     assert live == [(3, "call_1", "{}")]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_realtime_reset.py -v`
 Expected: FAIL (`ImportError: RecentIds` / `AttributeError: reset_connection_state`)
 
-- [ ] **Step 3: Implement.** In `realtime.py`:
+- [x] **Step 3: Implement.** In `realtime.py`:
 
 ```python
 class RecentIds:
@@ -1289,12 +1289,12 @@ async def reset_connection_state(self) -> None:
     ("mark input disabled / response inactive" from the spec checklist is the FSM's job — the caller transitions to `RECOVERING`/`CONNECTING` around this call; "remove connection-specific timers" gains `self.watchdog.clear()` in Task 8.)
   - Call `await self.reset_connection_state()` in `run()`'s exception path (the existing retry loop), before sleeping/reconnecting.
 
-- [ ] **Step 4: Run the full suite**
+- [x] **Step 4: Run the full suite**
 
 Run: `uv run pytest -v`
 Expected: all PASS (barge-in tests updated in Task 5 already construct `RecentIds()` via `session._interrupted_response_ids = set()` — change those two lines to `RecentIds()` as part of this task; grep: `rg -n "_interrupted_response_ids" tests`)
 
-- [ ] **Step 5: Lint and commit**
+- [x] **Step 5: Lint and commit**
 
 ```bash
 uv run ruff check .
@@ -1327,7 +1327,7 @@ git commit -m "feat: add connection epochs, canonical reset, bounded interrupted
   - `class SessionOutcome(Enum): STOPPED; FATAL_CONFIG`
 - `RealtimeRobotSession.run(stop_event) -> SessionOutcome` (was implicitly `None`/raise)
 
-- [ ] **Step 1: Write the failing unit tests**
+- [x] **Step 1: Write the failing unit tests**
 
 ```python
 # tests/test_session_recovery.py
@@ -1401,12 +1401,12 @@ def test_nested_response_status_is_found() -> None:
     assert classify_connection_error(Handshake()) is ErrorClass.FATAL_CONFIG
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_session_recovery.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement `session/recovery.py`**
+- [x] **Step 3: Implement `session/recovery.py`**
 
 ```python
 # reachy_openai_realtime/session/recovery.py
@@ -1497,12 +1497,12 @@ def classify_connection_error(exc: BaseException) -> ErrorClass:
     return ErrorClass.TRANSIENT
 ```
 
-- [ ] **Step 4: Run unit tests to verify they pass**
+- [x] **Step 4: Run unit tests to verify they pass**
 
 Run: `uv run pytest tests/test_session_recovery.py -v`
 Expected: all PASS
 
-- [ ] **Step 5: Write the failing reconnect-loop test**
+- [x] **Step 5: Write the failing reconnect-loop test**
 
 ```python
 # tests/test_realtime_reconnect.py
@@ -1572,7 +1572,7 @@ def test_transient_error_retries_with_new_epoch_until_stop() -> None:
 
 The real `__init__` signature (realtime.py:101) is `(robot, motion, config, status, language_provider=None, camera_enabled=None, capture_camera_jpeg=None)`, and it constructs `AsyncOpenAI()` internally — so `os.environ.setdefault("OPENAI_API_KEY", "sk-test-key-0000000000")` first, then `RealtimeRobotSession(fake_robot, BargeInMotion(), AppConfig(), RuntimeStatus())` (fakes from the manual-turn module; the mocked `_run_connection` never touches robot or client).
 
-- [ ] **Step 6: Implement the `run()` rewrite in `realtime.py`**
+- [x] **Step 6: Implement the `run()` rewrite in `realtime.py`**
 
 ```python
 async def run(self, stop_event) -> SessionOutcome:
@@ -1620,7 +1620,7 @@ async def _sleep_unless_stopped(self, stop_event, seconds: float) -> None:
 
   Match the existing `set_phase` call conventions in `realtime.py` for the config-error phase (read neighboring `set_phase` calls and use the same parameter style; the i18n `detail_key` machinery already exists — reuse an existing error-ish key if `config_error` isn't defined yet, and note the raw-message fallback: `add_event` with no key). Remove the old `for attempt in range(...)` loop, the `2 ** (attempt - 1)` sleep, and the terminal `RuntimeError`. Move the Task 6 epoch increment from `_run_connection` into this loop (delete the old line).
 
-- [ ] **Step 7: Remove `reconnect_attempts` from `config.py`.** Delete the field from `AppConfig` and its `from_env` line. Grep for stragglers:
+- [x] **Step 7: Remove `reconnect_attempts` from `config.py`.** Delete the field from `AppConfig` and its `from_env` line. Grep for stragglers:
 
 ```bash
 rg -n "reconnect_attempts" reachy_openai_realtime tests
@@ -1628,7 +1628,7 @@ rg -n "reconnect_attempts" reachy_openai_realtime tests
 
 Update any test constructing `AppConfig(reconnect_attempts=...)`.
 
-- [ ] **Step 8: Handle `FATAL_CONFIG` in `main.py`.** In the run loop where `asyncio.run(session.run(stop_event))` is called, capture the outcome. On `SessionOutcome.FATAL_CONFIG`, wait for a configuration change before retrying (mirrors the existing API-key wait loop):
+- [x] **Step 8: Handle `FATAL_CONFIG` in `main.py`.** In the run loop where `asyncio.run(session.run(stop_event))` is called, capture the outcome. On `SessionOutcome.FATAL_CONFIG`, wait for a configuration change before retrying (mirrors the existing API-key wait loop):
 
 ```python
 outcome = asyncio.run(session.run(stop_event))
@@ -1644,7 +1644,7 @@ if outcome is SessionOutcome.FATAL_CONFIG:
 
 (`AppConfig` is a frozen dataclass, so tuple equality works. Reuse the module's existing imports/names — `load_instance_env` is already imported in `main.py` for startup.)
 
-- [ ] **Step 9: Run the full suite, lint, commit**
+- [x] **Step 9: Run the full suite, lint, commit**
 
 ```bash
 uv run pytest -v && uv run ruff check .
@@ -1675,7 +1675,7 @@ git commit -m "feat: infinite jittered reconnect with fatal config-error classif
     - `async watch(self, interval_seconds: float = 0.25) -> None` — polls forever; raises `WatchdogTimeout` on expiry
   - `RealtimeRobotSession.watchdog: DeadlineWatchdog` (constructed in `__init__`)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_session_watchdog.py
@@ -1764,12 +1764,12 @@ def test_clear_disarms_everything() -> None:
     assert watchdog.expired() is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_session_watchdog.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # reachy_openai_realtime/session/watchdog.py
@@ -1834,12 +1834,12 @@ class DeadlineWatchdog:
             await asyncio.sleep(interval_seconds)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_session_watchdog.py -v`
 Expected: all PASS
 
-- [ ] **Step 5: Integrate into `realtime.py`.**
+- [x] **Step 5: Integrate into `realtime.py`.**
   - `__init__`: `self.watchdog = DeadlineWatchdog()`.
   - `_run_connection`: add a fourth task to the existing `asyncio.gather(...)` alongside record/playback/event loops:
 
@@ -1867,7 +1867,7 @@ async def _watchdog_loop(self) -> None:
     - tool-output flush in `response.done` handler, after sending outputs + `response.create`: `arm("tool_response")` (cleared by the next `response.created`, above).
   - `reset_connection_state`: add `self.watchdog.clear()` (this is the spec checklist line "remove connection-specific timers").
 
-- [ ] **Step 6: Write one integration test** (append to `tests/test_session_watchdog.py`):
+- [x] **Step 6: Write one integration test** (append to `tests/test_session_watchdog.py`):
 
 ```python
 def test_watchdog_loop_records_event_and_reraises() -> None:
@@ -1886,7 +1886,7 @@ def test_watchdog_loop_records_event_and_reraises() -> None:
         asyncio.run(session._watchdog_loop())
 ```
 
-- [ ] **Step 7: Run the full suite, lint, commit**
+- [x] **Step 7: Run the full suite, lint, commit**
 
 ```bash
 uv run pytest -v && uv run ruff check .
@@ -1922,7 +1922,7 @@ The spec's `audio/` package (§28) collides with the existing `audio.py` module,
     - `next_action(self, frame_age_seconds: float) -> str | None` — returns `"restart_capture"`, `"restart_media"`, `"restart_session"`, or None; healthy frames reset the ladder; a cooldown separates attempts
 - `RealtimeRobotSession._capture: CaptureWorker` (created+started at the top of `run()`, closed in its `finally`), `RealtimeRobotSession._mic_ladder: AudioRecoveryLadder` (in `__init__`)
 
-- [ ] **Step 1: Rename safety sweep.** Run each; every hit gets updated in Step 2:
+- [x] **Step 1: Rename safety sweep.** Run each; every hit gets updated in Step 2:
 
 ```bash
 rg -n "from \.audio import|from reachy_openai_realtime\.audio import" reachy_openai_realtime tests
@@ -1932,7 +1932,7 @@ rg -n "\btest_audio\b" tests pyproject.toml
 
 (Expect hits in `realtime.py` and `tests/test_audio.py`; there are no dynamic imports or entry points touching it — verify, don't assume.)
 
-- [ ] **Step 2: Perform the rename**
+- [x] **Step 2: Perform the rename**
 
 ```bash
 git mv reachy_openai_realtime/audio.py reachy_openai_realtime/dsp.py
@@ -1945,7 +1945,7 @@ Update every import found in Step 1 (`from .audio import ...` → `from .dsp imp
 git add -u && git commit -m "refactor: rename audio.py to dsp.py to free the audio package name"
 ```
 
-- [ ] **Step 3: Write the failing capture tests**
+- [x] **Step 3: Write the failing capture tests**
 
 ```python
 # tests/test_audio_capture.py
@@ -2079,12 +2079,12 @@ def test_audio_pipeline_stalled_is_a_runtime_error() -> None:
         raise AudioPipelineStalled("mic dead")
 ```
 
-- [ ] **Step 4: Run tests to verify they fail**
+- [x] **Step 4: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_audio_capture.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 5: Implement `audio/capture.py`**
+- [x] **Step 5: Implement `audio/capture.py`**
 
 ```python
 # reachy_openai_realtime/audio/capture.py
@@ -2215,12 +2215,12 @@ class AudioRecoveryLadder:
         return action
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_audio_capture.py -v`
 Expected: all PASS
 
-- [ ] **Step 7: Integrate into `realtime.py`.**
+- [x] **Step 7: Integrate into `realtime.py`.**
   - `__init__`: `self._mic_ladder = AudioRecoveryLadder()`; `self._capture: CaptureWorker | None = None`.
   - Top of `run()` (before the reconnect loop): `self._capture = CaptureWorker(self.robot.media); self._capture.start()`; wrap the whole loop in `try/finally` with `self._capture.close()` in the finally. The worker outlives reconnects on purpose — reconnecting must not touch the mic.
   - In `run()`'s exception handling (Task 7 shape), add before the generic `except Exception`:
@@ -2264,7 +2264,7 @@ def _restart_media_pipeline(self) -> None:
     self.robot.media.start_playing()
 ```
 
-- [ ] **Step 8: Escalation in `main.py`.** In the outer run loop's exception handling, catch `AudioPipelineStalled` before the generic handler; re-assert media before the next session:
+- [x] **Step 8: Escalation in `main.py`.** In the outer run loop's exception handling, catch `AudioPipelineStalled` before the generic handler; re-assert media before the next session:
 
 ```python
 except AudioPipelineStalled:
@@ -2281,7 +2281,7 @@ except AudioPipelineStalled:
 
 (Use the actual robot variable name in `main.py`'s run loop — read it; do not reboot or exit.)
 
-- [ ] **Step 9: Update session tests for the worker.** Record-loop tests no longer exit on `get_audio_sample() → None` (the worker absorbs it) — they exit via `stop_event`:
+- [x] **Step 9: Update session tests for the worker.** Record-loop tests no longer exit on `get_audio_sample() → None` (the worker absorbs it) — they exit via `stop_event`:
   - In `tests/test_realtime_fsm.py` and `tests/test_realtime_manual_turn.py`, every session running `_record_loop` gains:
 
 ```python
@@ -2309,7 +2309,7 @@ class ExhaustionStopMedia(FakeMedia):
   (add it to `tests/conftest.py` importing FakeMedia is circular — define it inside `test_realtime_fsm.py`).
   - `test_doa_poller_never_blocks_caller_when_usb_read_stalls` is untouched.
 
-- [ ] **Step 10: Run the full suite, lint, commit**
+- [x] **Step 10: Run the full suite, lint, commit**
 
 ```bash
 uv run pytest -v && uv run ruff check .
@@ -2345,7 +2345,7 @@ git commit -m "feat: dedicated mic capture worker with stall-recovery ladder"
 - `RealtimeRobotSession._playback: PlaybackBuffer`, `RealtimeRobotSession._speaker: SpeakerWorker` (started/closed in `run()` alongside `_capture`); `RealtimeRobotSession._handle_playback_overrun(dropped_ms: float) -> None` (async)
 - The old `RealtimeRobotSession._playback_queue: asyncio.Queue` is DELETED. Grep `rg -n "_playback_queue" reachy_openai_realtime tests` — every hit gets migrated in this task.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_audio_playback.py
@@ -2475,12 +2475,12 @@ def test_speaker_worker_flush_drops_queued_audio() -> None:
 
 (`SpeakerWorker.close()` with a wedged media thread: the thread is a daemon and `join(timeout=2.0)` gives up — the test tolerates the orphan because the process exits; this mirrors production where a wedged ALSA write can only be abandoned. `submit` returning False is the recovery signal.)
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_audio_playback.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement `audio/playback.py`**
+- [x] **Step 3: Implement `audio/playback.py`**
 
 ```python
 # reachy_openai_realtime/audio/playback.py
@@ -2649,12 +2649,12 @@ class SpeakerWorker:
                     logger.exception("on_write callback failed")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_audio_playback.py -v`
 Expected: all PASS
 
-- [ ] **Step 5: Integrate into `realtime.py`.**
+- [x] **Step 5: Integrate into `realtime.py`.**
   - `__init__`: replace `self._playback_queue = asyncio.Queue(maxsize=64)` with `self._playback = PlaybackBuffer()` and add `self._speaker = SpeakerWorker(self.robot.media, on_write=self._on_speaker_write)` plus:
 
 ```python
@@ -2718,7 +2718,7 @@ async def _handle_playback_overrun(self, dropped_ms: float) -> None:
   - `_clear_playback`: replace the queue-drain lines with `self._playback.clear()` and add `self._speaker.flush()` before the existing `clear_player()` + `start_recording()` lines. **Do not remove those two lines or their comment — the shared-pipeline gotcha stands.**
   - `reset_connection_state` (Task 6): replace the `_playback_queue` drain block with `self._playback.clear()` and `self._speaker.flush()`.
 
-- [ ] **Step 6: Migrate remaining references.**
+- [x] **Step 6: Migrate remaining references.**
 
 ```bash
 rg -n "_playback_queue" reachy_openai_realtime tests
@@ -2726,7 +2726,7 @@ rg -n "_playback_queue" reachy_openai_realtime tests
 
 Update every test hit: `session._playback_queue = asyncio.Queue()` → `session._playback = PlaybackBuffer()` (import from `reachy_openai_realtime.audio.playback`), plus `session._speaker = SpeakerWorker(FakeSpeakerMedia())` where `_clear_playback` runs (the barge-in tests). In `tests/test_realtime_reset.py`, the dirty-session setup pushes a chunk (`session._playback.push(chunk(100.0))` — reuse the local `chunk` helper pattern) and the assertion becomes `assert session._playback.queued_ms() == 0.0`.
 
-- [ ] **Step 7: Add the overrun integration test** (append to `tests/test_audio_playback.py`):
+- [x] **Step 7: Add the overrun integration test** (append to `tests/test_audio_playback.py`):
 
 ```python
 def test_playback_overrun_cancels_response_and_returns_to_listening() -> None:
@@ -2765,7 +2765,7 @@ def test_playback_overrun_cancels_response_and_returns_to_listening() -> None:
 
 (Adjust the `_clear_playback` collaborator attributes to whatever that method actually touches — read it; `BargeInMedia` already models the clear/restart pair.)
 
-- [ ] **Step 8: Run the full suite, lint, commit**
+- [x] **Step 8: Run the full suite, lint, commit**
 
 ```bash
 uv run pytest -v && uv run ruff check .
@@ -2791,7 +2791,7 @@ git commit -m "feat: latency-bounded playback buffer with speaker worker and ove
   - `DoAPoller.age_seconds() -> float` — seconds since the last successful DoA read (`float("inf")` before the first).
   - Metric names (exact, spec §19): `speech_end_to_response_created_ms`, `speech_end_to_first_audio_received_ms`, `speech_end_to_first_audio_played_ms`, `audio_receive_to_playback_ms`, `barge_in_to_cancel_ms`, `barge_in_to_silence_ms`, `tool_duration_ms`; gauges `queued_audio_ms`, `mic_frame_age_ms`, `doa_age_ms`, `connection_uptime_seconds`; counters `reconnect_count`, `mic_restart_count`, `speaker_restart_count`, `tool_error_count`, `playback_overrun_count`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_realtime_metrics.py
@@ -2875,12 +2875,12 @@ def test_speaker_write_callback_records_first_audio_played() -> None:
     assert latency["audio_receive_to_playback_ms"]["count"] == 2
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_realtime_metrics.py -v`
 Expected: FAIL (`AttributeError: _observe_speech_latency` etc.)
 
-- [ ] **Step 3: Implement in `realtime.py`.**
+- [x] **Step 3: Implement in `realtime.py`.**
   - `__init__`: `self._speech_ended_at: float | None = None`, `self._barge_in_at: float | None = None`, `self._first_write_pending = False`.
   - Helper:
 
@@ -2913,7 +2913,7 @@ def _on_speaker_write(self, duration_ms: float, received_at: float) -> None:
     - counters: `increment("reconnect_count")` in `run()`'s retry path (next to `realtime.reconnect` event); `increment("mic_restart_count")` at Task 9's `restart_capture`/`restart_media` action sites; `increment("speaker_restart_count")` at Task 10's speaker-stall restart site; `increment("playback_overrun_count")` in `_handle_playback_overrun`; `increment("tool_error_count")` in `_handle_tool_call`'s error/`ok: false` path; `observe_ms("tool_duration_ms", ...)` around the `motion.submit(...)` call in `_handle_tool_call` (Phase 1 note: this measures validate+enqueue only; the Phase 3 ToolExecutor will measure true execution).
   - `/api/diagnostics` needs no wiring: it already embeds `"runtime": self.runtime_status.snapshot()` (main.py:102), and Task 3 put `"metrics"` inside `snapshot()`. Verify with a quick assertion in the test file that `RuntimeStatus().snapshot()["metrics"]` has the `latency/counters/gauges` keys; only touch `main.py` if that embed has been removed.
 
-- [ ] **Step 4: Run the full suite, lint, commit**
+- [x] **Step 4: Run the full suite, lint, commit**
 
 ```bash
 uv run pytest -v && uv run ruff check .
@@ -2936,7 +2936,7 @@ git commit -m "feat: record speech, barge-in, and audio-pipeline latency metrics
   - `class ScriptedConnection:` — async-iterable fake with `session` (records `update` calls), `input_audio_buffer`, `response`, `conversation` recorders; `__init__(self, events: list, *, raise_after: Exception | None = None, on_drained: Callable[[], None] | None = None)`. Iteration yields each scripted event (with an `await asyncio.sleep(0)` between), then calls `on_drained` if set, then raises `raise_after` if set, else idles in `await asyncio.sleep(0.05)` forever.
   - `class FakeRealtimeClient:` — `FakeRealtimeClient(connections: list[ScriptedConnection])`; `client.realtime.connect(model=...)` returns an async context manager yielding the next scripted connection (raises `AssertionError` if exhausted).
 
-- [ ] **Step 1: Extend `tests/conftest.py`**
+- [x] **Step 1: Extend `tests/conftest.py`**
 
 ```python
 import asyncio
@@ -3053,7 +3053,7 @@ class FakeRealtimeClient:
 
 Check the shape `_run_connection` actually consumes (`async with self.client.realtime.connect(model=...)` then `async for event in connection` — confirm attribute names against `realtime.py` and adjust the fake to match exactly, including `connection.session.update`).
 
-- [ ] **Step 2: Write the chaos tests.** `tests/test_chaos_reconnect.py`:
+- [x] **Step 2: Write the chaos tests.** `tests/test_chaos_reconnect.py`:
 
 ```python
 import asyncio
@@ -3264,12 +3264,12 @@ def test_session_updated_timeout_tears_down_connection() -> None:
 
 Both files' hand-built sessions must mirror what the exercised code paths actually read — run each test, and when an `AttributeError` names a missing attribute, add it with the neutral value used in `tests/test_realtime_reset.py`'s dirty-session builder. That is expected calibration, not failure.
 
-- [ ] **Step 3: Run the chaos tests**
+- [x] **Step 3: Run the chaos tests**
 
 Run: `uv run pytest tests/test_chaos_reconnect.py tests/test_chaos_protocol.py -v`
 Expected: all PASS (iterate on fake shapes per the calibration note until green)
 
-- [ ] **Step 4: Run the full suite, lint, commit**
+- [x] **Step 4: Run the full suite, lint, commit**
 
 ```bash
 uv run pytest -v && uv run ruff check .
@@ -3287,14 +3287,14 @@ git commit -m "test: add scripted-connection chaos tests and reconnect leak chec
 - Create: `gotchas.md`
 - Modify: `docs/superpowers/plans/2026-08-17-phase1-reliability-foundation.md` (tick remaining checkboxes)
 
-- [ ] **Step 1: README section.** Append a `## Reliability & recovery` section covering, in prose (adapt to the README's existing tone/structure — read it first):
+- [x] **Step 1: README section.** Append a `## Reliability & recovery` section covering, in prose (adapt to the README's existing tone/structure — read it first):
   - the session FSM states and that `events.jsonl` logs every transition;
   - reconnect policy: infinite retries with 1→30 s jittered backoff, reset after 60 s healthy; fatal config errors (bad key/model) stop retries and surface in the UI until settings change; Realtime's 60-minute session cap makes periodic reconnects normal;
   - watchdog deadlines (table of the 7 operations/timeouts from `DEFAULT_DEADLINES`);
   - mic recovery ladder (restart capture → restart media → restart app session; never reboots the robot) and the playback overrun rule (drop-oldest over 500 ms, cancel + relisten at 1 s);
   - observability: `~/.config/reachy-mini/apps/reachy_openai_realtime/{events.jsonl,application.log}`, metrics in `/api/status` and `/api/diagnostics`, and that logs never contain API keys or raw audio.
 
-- [ ] **Step 2: Extend `gotchas.md`.** The file was seeded at planning time with the hardware/API traps — extend it, never regenerate it (other agents add their own entries). Append the implementation pointers that exist only now:
+- [x] **Step 2: Extend `gotchas.md`.** The file was seeded at planning time with the hardware/API traps — extend it, never regenerate it (other agents add their own entries). Append the implementation pointers that exist only now:
 
 ```markdown
 - Mic drain lives in `reachy_openai_realtime/audio/capture.py` (`CaptureWorker`). The stall
@@ -3307,9 +3307,9 @@ git commit -m "test: add scripted-connection chaos tests and reconnect leak chec
   errors park in `config_error` until settings change (`main.py` fingerprint wait loop).
 ```
 
-- [ ] **Step 3: Update `plan.md`.** Add a short status block: Phase 1 (reliability foundation) implemented per `docs/superpowers/plans/2026-08-17-phase1-reliability-foundation.md`; spec at `docs/production-hardening-spec.md`; Phases 2–6 pending, each gets its own plan.
+- [x] **Step 3: Update `plan.md`.** Add a short status block: Phase 1 (reliability foundation) implemented per `docs/superpowers/plans/2026-08-17-phase1-reliability-foundation.md`; spec at `docs/production-hardening-spec.md`; Phases 2–6 pending, each gets its own plan.
 
-- [ ] **Step 4: Full verification**
+- [x] **Step 4: Full verification**
 
 ```bash
 uv run ruff check . && uv run pytest -v
@@ -3317,7 +3317,7 @@ uv run ruff check . && uv run pytest -v
 
 Expected: clean lint, all tests green, zero new warnings in output. Physical smoke test on the robot is not possible from the dev machine — say so in the completion report rather than claiming it; the Phase 6 soak covers it.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md plan.md gotchas.md docs/superpowers/plans/2026-08-17-phase1-reliability-foundation.md
@@ -3347,4 +3347,12 @@ git commit -m "docs: document Phase 1 reliability behavior and project gotchas"
 | §31 constraints | Global Constraints section; per-task commits |
 
 Out of scope here by design: §10–§17, §20–§25 (Phases 2–5), §9 neural-VAD fallback, §24 full supervisor (Phase 1 ships its audio/watchdog subset).
+
+## Implementation notes
+
+`speech_end_to_first_audio_received_ms` observes on the first audio delta per response via a `_playback_started_at is None` guard. A narrow double-fire window exists across back-to-back responses — acceptable for Phase 1; revisit if latency histograms look bimodal.
+
+`connection_uptime_seconds` measures from connection-attempt start, not from `session.updated` — uptime includes WebSocket handshake time.
+
+The Task 10 wedged-submit speaker test relies on real thread timing (0.05 s-scale waits). If it flakes under Phase 6 soak load, tighten it with events rather than longer sleeps.
 

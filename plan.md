@@ -14,6 +14,12 @@ Provide low-latency, multilingual speech-to-speech conversation on Reachy Mini W
 - Camera: OFF by default; one image at detected speech start when enabled
 - Motion: bounded semantic presets executed through a dedicated controller
 
+## Phase status
+
+**Phase 1 (reliability foundation): complete.** Implementation documented in
+`docs/superpowers/plans/2026-08-17-phase1-reliability-foundation.md`; spec at
+`docs/production-hardening-spec.md`. Phases 2–6 are pending; each gets its own plan doc.
+
 ## Safety boundaries
 
 - The model cannot submit raw joint angles.

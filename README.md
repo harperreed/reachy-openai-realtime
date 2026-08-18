@@ -102,6 +102,65 @@ The motion layer validates tool names and arguments and maps them to bounded pre
 
 The usage panel starts tracking after this feature is installed. It stores token counters only in the robot's private app configuration directory; it does not store conversation audio or transcripts. The USD amount is an estimate based on the published `gpt-realtime-2.1` rates and should be checked against the OpenAI billing dashboard for the final amount.
 
+## Reliability & recovery
+
+The app self-heals from network drops, API timeouts, and audio stalls without manual restarts.
+
+### Session state machine
+
+Every connection runs through an explicit FSM (`reachy_openai_realtime/session/fsm.py`). States:
+
+`DISCONNECTED` → `CONNECTING` → `INITIALIZING` → `LISTENING` ↔ `USER_SPEAKING` → `WAITING_RESPONSE` → `ASSISTANT_SPEAKING` ↔ `INTERRUPTING`; `TOOL_EXECUTION` and `RECOVERING` are reachable from any active state; `STOPPING` → `DISCONNECTED` ends the session cleanly.
+
+Every state transition is written to `events.jsonl` as an `fsm.transition` entry.
+
+### Reconnect policy
+
+The app retries connections indefinitely with jittered exponential backoff: delays of 1 → 2 → 4 → 8 → 15 → 30 seconds, each ±20%, then held at 30 s. A session that stays healthy for 60 s resets the counter to zero. OpenAI Realtime hard-caps sessions at 60 minutes, so periodic server-initiated closes are normal — the app treats them as transient and reconnects.
+
+Authentication failures, bad model names, and other config errors (HTTP 4xx, except 429) stop the retry loop and surface an error in the UI. The app waits for a settings change before reconnecting.
+
+### Watchdog deadlines
+
+An expectation-based watchdog (`reachy_openai_realtime/session/watchdog.py`) arms a deadline when a protocol operation starts and disarms it on the expected server reply. A missed deadline tears down the connection for a clean rebuild.
+
+| Operation | Deadline |
+|---|---|
+| `session_update` | 5 s |
+| `response_create` | 5 s |
+| `first_output` | 15 s |
+| `response_cancel` | 3 s |
+| `tool_response` | 5 s |
+| `input_append` | 5 s |
+| `camera_item` | 5 s |
+
+### Mic recovery ladder
+
+The capture worker (`reachy_openai_realtime/audio/capture.py`) drains `media.get_audio_sample()` continuously regardless of session state. If the mic stalls for 1.75 s, the `AudioRecoveryLadder` escalates in steps (3 s cooldown between each):
+
+1. `restart_capture` — restart the capture thread
+2. `restart_media` — restart the GStreamer media pipeline
+3. `restart_session` — rebuild the app session via the outer run loop
+
+The robot is never rebooted automatically.
+
+### Playback freshness
+
+The playback buffer (`reachy_openai_realtime/audio/playback.py`) targets 200 ms of queued audio. Above 500 ms it drops the oldest chunks first. Above 1 s it cancels the current response and relistens (`audio.playback.overrun` in `events.jsonl`). Freshness takes priority over completeness.
+
+### Observability
+
+Runtime logs live in:
+
+```text
+~/.config/reachy-mini/apps/reachy_openai_realtime/events.jsonl
+~/.config/reachy-mini/apps/reachy_openai_realtime/application.log
+```
+
+Both files rotate at 2–5 MB and keep two generations. Neither file ever contains an API key or raw microphone audio — all values are redacted before writing.
+
+Live metrics (connection uptime, latency percentiles, queue depths, reconnect counts) are available at `/api/status` and the full diagnostics breakdown at `/api/diagnostics`.
+
 ## License
 
 [MIT](LICENSE)
