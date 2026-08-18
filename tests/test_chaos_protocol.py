@@ -159,3 +159,44 @@ def test_session_updated_timeout_tears_down_connection() -> None:
     with pytest.raises(WatchdogTimeout) as excinfo:
         asyncio.run(run())
     assert excinfo.value.operation == "session_update"
+
+
+# ---------------------------------------------------------------------------
+# Bug C: FSM wedges in WAITING_RESPONSE after audio-free response.done
+# ---------------------------------------------------------------------------
+
+
+def test_audio_free_response_done_transitions_to_listening() -> None:
+    """An audio-free, tool-free response.done must transition FSM to LISTENING.
+
+    Before the fix, _assistant_audio_active() returned True while in
+    WAITING_RESPONSE (because generation_active() includes that state), so
+    the event handler took the else branch and never transitioned.
+    """
+    done = realtime_event(
+        "response.done",
+        response=SimpleNamespace(id="resp_audiofree", status="completed", usage=None, output=[]),
+    )
+    drained = asyncio.Event()
+    connection = ScriptedConnection([done], on_drained=lambda: drained.set())
+
+    session = _build_response_done_session(connection, response_id="resp_audiofree")
+    # No pending tool outputs — pure audio-free, tool-free path
+    session._pending_tool_outputs = []
+    # Speaker idle — no audio was playing
+    session._speaker_busy_until = float("-inf")
+
+    async def run_event_loop() -> None:
+        task = asyncio.ensure_future(session._event_loop(FakeStopEvent()))
+        await asyncio.wait_for(drained.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_event_loop())
+
+    assert session.fsm.state is SessionState.LISTENING, (
+        f"FSM must reach LISTENING after audio-free response.done; got {session.fsm.state}"
+    )

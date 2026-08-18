@@ -927,7 +927,16 @@ class RealtimeRobotSession:
                         await self._flush_tool_outputs()
                     else:
                         now = time.monotonic()
-                        if not self._assistant_audio_active(now):
+                        # At response.done, generation is finished by definition.
+                        # The only reason to defer LISTENING is audio still playing
+                        # from the speaker. WAITING_RESPONSE has no active audio, so
+                        # checking generation_active() here (as _assistant_audio_active
+                        # does) would keep us wedged. Check only the speaker deadline.
+                        audio_still_playing = (
+                            self.fsm.state is SessionState.ASSISTANT_SPEAKING
+                            and now < self._speaker_busy_until
+                        )
+                        if not audio_still_playing:
                             self.fsm.transition(SessionState.LISTENING, reason="response_completed")
                             self.motion.set_speaking_enabled(False)
                             self.status.set_phase(
