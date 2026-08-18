@@ -1,0 +1,26 @@
+name: Sync to Hugging Face
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    if: ${{ vars.HF_REPO_ID != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Sync Space
+        uses: huggingface/hub-sync@v0.1.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: ${{ vars.HF_REPO_ID }}
+          hf_token: ${{ secrets.HF_TOKEN }}
+          space_sdk: static
