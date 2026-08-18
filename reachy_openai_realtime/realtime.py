@@ -294,7 +294,8 @@ class RealtimeRobotSession:
         while not stop_event.is_set():
             sample = await asyncio.to_thread(self.robot.media.get_audio_sample)
             if sample is None:
-                break
+                await asyncio.sleep(0.005)
+                continue
             if not microphone_ready:
                 microphone_ready = True
                 self.status.add_event(

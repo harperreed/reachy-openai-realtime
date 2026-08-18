@@ -11,7 +11,23 @@ from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.vad import EnergyTurnDetector
 
+import numpy as np
+
 from test_realtime_manual_turn import FakeConnection, FakeMedia, FakeMotion, FakeStopEvent, stereo_frame
+
+
+class ExhaustionStopMedia(FakeMedia):
+    """FakeMedia that sets stop_event.stopped when frames run out."""
+
+    def __init__(self, frames: list[np.ndarray], stop_event: FakeStopEvent) -> None:
+        super().__init__(frames)
+        self._stop_event = stop_event
+
+    def get_audio_sample(self) -> np.ndarray | None:
+        sample = super().get_audio_sample()
+        if sample is None:
+            self._stop_event.stopped = True
+        return sample
 
 
 def make_session(frames, stop_event) -> RealtimeRobotSession:
@@ -57,6 +73,7 @@ def test_frames_ignored_while_waiting_for_response() -> None:
     stop_event = FakeStopEvent()
     frames = [stereo_frame(-30.0) for _ in range(15)]
     session = make_session(frames, stop_event)
+    session.robot = type("Robot", (), {"media": ExhaustionStopMedia(frames, stop_event)})()
     drive_fsm(session.fsm, SessionState.WAITING_RESPONSE)
 
     asyncio.run(session._record_loop(stop_event))
