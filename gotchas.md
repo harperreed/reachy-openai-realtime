@@ -38,3 +38,14 @@
   group.** Dev tools (ruff, pytest) live in `[dependency-groups] dev` — never only in an extra.
   A "clean" check may be a different version than the lock pins; `uv run which <tool>` must
   point into `.venv`. Canonical check: `uv run ruff check . && uv run pytest`.
+- **The robot's dashboard "daemon restart" does NOT restart the daemon process.** `POST
+  /api/daemon/stop|start` recycles the hardware-daemon object inside the same Python process;
+  the FastAPI/AppManager singleton and its in-memory `current_app` survive. If `stop_current_app`
+  wedges mid-cleanup (reachy_mini 1.9.0 can park an app in state `stopping` forever — cleanup
+  after "App stopped successfully" never reaches `current_app = None`), every start AND stop
+  returns 400 ("An app is already running" / "No app is currently running") no matter how many
+  dashboard restarts, reinstalls, or cache clears you do. Recovery: `ssh pollen@<robot>` then
+  `sudo systemctl restart reachy-mini-daemon.service` (service restart, never an OS reboot).
+  Diagnose with `curl localhost:8000/api/apps/current-app-status` on the robot; `state:
+  "stopping"` with no app process = the wedge. `uvx` lives at `/opt/uv` on Reachy OS if you
+  need py-spy.
