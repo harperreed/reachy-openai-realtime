@@ -323,7 +323,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 try:
                     outcome = asyncio.run(session.run(stop_event))
                 except AudioPipelineStalled:
-                    self.runtime_status.add_event("warning", "audio pipeline stalled; restarting app session")
+                    self.runtime_status.add_event("audio pipeline stalled; restarting app session", level="warning")
                     try:
                         reachy_mini.media.stop_playing()
                         reachy_mini.media.stop_recording()

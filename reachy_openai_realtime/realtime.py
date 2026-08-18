@@ -1059,7 +1059,7 @@ class RealtimeRobotSession:
     async def _handle_playback_overrun(self, dropped_ms: float) -> None:
         self.status.record_event("audio.playback.overrun", dropped_ms=round(dropped_ms, 1))
         self.status.metrics.increment("playback_overrun_count")
-        self.status.add_event("warning", "playback overran; dropping stale audio")
+        self.status.add_event("playback overran; dropping stale audio", level="warning")
         response_id = self._current_response_id
         if response_id and self.connection is not None:
             self._interrupted_response_ids.add(response_id)
@@ -1079,7 +1079,7 @@ class RealtimeRobotSession:
             self.status.record_event(
                 "watchdog.triggered", operation=exc.operation, timeout_seconds=exc.timeout_seconds
             )
-            self.status.add_event("warning", f"protocol watchdog: {exc.operation} timed out")
+            self.status.add_event(f"protocol watchdog: {exc.operation} timed out", level="warning")
             raise
 
     async def reset_connection_state(self) -> None:

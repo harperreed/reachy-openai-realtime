@@ -99,3 +99,37 @@ def test_watchdog_loop_records_event_and_reraises() -> None:
 
     with pytest.raises(WatchdogTimeout):
         asyncio.run(session._watchdog_loop())
+
+
+# ---------------------------------------------------------------------------
+# Bug B: add_event() args transposed at the watchdog warning site
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_warning_event_has_correct_level_and_message() -> None:
+    """_watchdog_loop must record level="warning" with the description as message.
+
+    Before the fix, the call was add_event("warning", "protocol watchdog: ..."),
+    which stored message="warning" and level="protocol watchdog: ...".
+    """
+    from reachy_openai_realtime.realtime import RealtimeRobotSession
+    from reachy_openai_realtime.runtime_status import RuntimeStatus
+    from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
+
+    clock = FakeClock()
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.status = RuntimeStatus()
+    session.watchdog = DeadlineWatchdog(clock=clock)
+    session.watchdog.arm("session_update")
+    clock.now += 60.0
+
+    with pytest.raises(WatchdogTimeout):
+        asyncio.run(session._watchdog_loop())
+
+    events = session.status.snapshot()["events"]
+    warning_events = [e for e in events if e.get("level") == "warning"]
+    assert warning_events, "no warning-level event was recorded by _watchdog_loop"
+    watchdog_warnings = [e for e in warning_events if "protocol watchdog" in e.get("message", "")]
+    assert watchdog_warnings, (
+        f"expected 'protocol watchdog' in warning message; got: {warning_events}"
+    )

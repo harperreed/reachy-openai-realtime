@@ -385,3 +385,50 @@ def test_playback_overrun_cancels_response_and_returns_to_listening() -> None:
     assert session.fsm.state is SessionState.LISTENING
     assert session.robot.media.audio.cleared == 1
     assert session.robot.media.recording_restarts == 1
+
+
+# ---------------------------------------------------------------------------
+# Bug B: add_event() args transposed at the playback-overrun warning site
+# ---------------------------------------------------------------------------
+
+
+def test_overrun_warning_event_has_correct_level_and_message() -> None:
+    """_handle_playback_overrun must record level="warning" with description as message.
+
+    Before the fix, the call was add_event("warning", "playback overran; ..."),
+    which stored message="warning" and level="playback overran; ...".
+    """
+    import asyncio
+
+    from conftest import drive_fsm
+    from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
+
+    from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
+    from reachy_openai_realtime.runtime_status import RuntimeStatus
+    from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
+    from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
+
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.robot = type("Robot", (), {"media": BargeInMedia()})()
+    session.motion = BargeInMotion()
+    session.status = RuntimeStatus()
+    session.connection = FakeConnection(FakeStopEvent())
+    session.fsm = SessionStateMachine()
+    drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
+    session.watchdog = DeadlineWatchdog()
+    session._playback = PlaybackBuffer()
+    session._speaker = SpeakerWorker(FakeSpeakerMedia())
+    session._playback_io_lock = asyncio.Lock()
+    session._current_response_id = "resp_b"
+    session._interrupted_response_ids = RecentIds()
+    session._speaker_busy_until = time.monotonic() + 1.0
+
+    asyncio.run(session._handle_playback_overrun(200.0))
+
+    events = session.status.snapshot()["events"]
+    warning_events = [e for e in events if e.get("level") == "warning"]
+    assert warning_events, "no warning-level event was recorded"
+    overrun_warnings = [e for e in warning_events if "playback overran" in e.get("message", "")]
+    assert overrun_warnings, (
+        f"expected 'playback overran' in warning message; got: {warning_events}"
+    )
