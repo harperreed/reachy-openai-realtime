@@ -114,6 +114,13 @@ class DoAPoller:
                 return None
             return self._latest
 
+    def age_seconds(self) -> float:
+        """Seconds since the last successful DoA read. Returns inf before first read."""
+        with self._lock:
+            if self._latest_at == 0.0:
+                return float("inf")
+            return time.monotonic() - self._latest_at
+
     def _run(self) -> None:
         while not self._stop_event.is_set() and not self._app_stop_event.is_set():
             try:
@@ -175,6 +182,14 @@ class RealtimeRobotSession:
         self.watchdog = DeadlineWatchdog()
         self._mic_ladder = AudioRecoveryLadder()
         self._capture: CaptureWorker | None = None
+        self._speech_ended_at: float | None = None
+        self._barge_in_at: float | None = None
+        self._first_write_pending = False
+
+    def _observe_speech_latency(self, name: str) -> None:
+        if self._speech_ended_at is None:
+            return
+        self.status.metrics.observe_ms(name, (time.monotonic() - self._speech_ended_at) * 1000.0)
 
     def _on_fsm_transition(self, old_state: SessionState, new_state: SessionState, reason: str) -> None:
         self.status.record_event(
@@ -182,7 +197,13 @@ class RealtimeRobotSession:
         )
 
     def _on_speaker_write(self, duration_ms: float, received_at: float) -> None:
-        self._last_speaker_write_at = time.monotonic()  # Task 11 adds latency metrics here
+        now = time.monotonic()
+        self._last_speaker_write_at = now
+        self.status.metrics.observe_ms("audio_receive_to_playback_ms", (now - received_at) * 1000.0)
+        if self._first_write_pending:
+            self._first_write_pending = False
+            self._observe_speech_latency("speech_end_to_first_audio_played_ms")
+            self.status.record_event("response.first_audio_played")
 
     async def run(self, stop_event: Any) -> SessionOutcome:
         self._capture = CaptureWorker(self.robot.media)
@@ -219,6 +240,7 @@ class RealtimeRobotSession:
                 backoff.note_session_duration(time.monotonic() - connected_at)
                 delay = backoff.next_delay()
                 self.status.record_event("realtime.reconnect", delay_seconds=round(delay, 2))
+                self.status.metrics.increment("reconnect_count")
                 await self._sleep_unless_stopped(stop_event, delay)
             self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
             await self.reset_connection_state()
@@ -240,6 +262,9 @@ class RealtimeRobotSession:
     async def _run_connection(self, stop_event: Any) -> None:
         async with self.client.realtime.connect(model=self.config.model) as connection:
             self.connection = connection
+            # _connected_at marks attempt start (includes DNS/TLS/handshake); difference vs
+            # post-handshake is milliseconds but the gauge counts minutes.
+            self._connected_at = time.monotonic()
             self.fsm.transition(SessionState.INITIALIZING, reason="socket_open")
             self._last_camera_item_id = None
             self._pending_camera_items.clear()
@@ -351,10 +376,12 @@ class RealtimeRobotSession:
                 if action == "restart_capture":
                     self.status.record_event("audio.capture.stalled", action=action)
                     await asyncio.to_thread(self._restart_capture)
+                    self.status.metrics.increment("mic_restart_count")
                     self.status.record_event("audio.capture.restarted", action=action)
                 elif action == "restart_media":
                     self.status.record_event("audio.capture.stalled", action=action)
                     await asyncio.to_thread(self._restart_media_pipeline)
+                    self.status.metrics.increment("mic_restart_count")
                     self.status.record_event("audio.capture.restarted", action=action)
                 elif action == "restart_session":
                     self.status.record_event("audio.capture.stalled", action=action)
@@ -370,6 +397,17 @@ class RealtimeRobotSession:
             mono, selected_channel, channel_levels = select_mono_float32(sample)
             dbfs = audio_level_dbfs(mono)
             now = time.monotonic()
+            self.status.metrics.set_gauge("mic_frame_age_ms", self._capture.frame_age_seconds() * 1000.0)
+            self.status.metrics.set_gauge("queued_audio_ms", self._playback.queued_ms())
+            doa_poller_local = getattr(self, "_doa_poller", None) or doa_poller
+            if doa_poller_local is not None:
+                _doa_age = doa_poller_local.age_seconds()
+                self.status.metrics.set_gauge(
+                    "doa_age_ms", -1.0 if math.isinf(_doa_age) else _doa_age * 1000.0
+                )
+            connected_at = getattr(self, "_connected_at", None)
+            if connected_at is not None:
+                self.status.metrics.set_gauge("connection_uptime_seconds", now - connected_at)
             if doa_poller is not None and now - last_doa_update >= 0.1:
                 doa = doa_poller.latest()
                 if doa is not None:
@@ -527,6 +565,7 @@ class RealtimeRobotSession:
                 await self._finish_camera_capture()
                 self.watchdog.arm("input_append")
                 await self.connection.input_audio_buffer.commit()
+                self._speech_ended_at = time.monotonic()
                 self.status.record_audio_commit()
                 self.watchdog.arm("response_create")
                 await self.connection.response.create(
@@ -701,6 +740,7 @@ class RealtimeRobotSession:
                 )
                 if not accepted and self._speaker.stalled(2.0):
                     self.status.record_event("audio.playback.restarted", reason="speaker_stalled")
+                    self.status.metrics.increment("speaker_restart_count")
                     self._speaker.flush()
                     await asyncio.to_thread(self._restart_media_pipeline)
                 else:
@@ -780,6 +820,8 @@ class RealtimeRobotSession:
                 self._current_audio_content_index = 0
                 self._playback_started_at = None
                 self._playback_pushed_ms = 0.0
+                self._first_write_pending = True
+                self._observe_speech_latency("speech_end_to_response_created_ms")
                 self.status.set_phase(
                     "responding",
                     "応答を生成しています",
@@ -799,6 +841,11 @@ class RealtimeRobotSession:
                 now = time.monotonic()
                 duration = pcm.size / self.config.output_rate
                 self._speaker_busy_until = max(now, self._speaker_busy_until) + duration
+                if self._playback_started_at is None:
+                    self._observe_speech_latency("speech_end_to_first_audio_received_ms")
+                    self.status.record_event(
+                        "response.first_audio_received", response_id=self._current_response_id
+                    )
                 self.fsm.transition(SessionState.ASSISTANT_SPEAKING, reason="first_audio_received")
                 self.status.set_phase(
                     "assistant_speaking",
@@ -891,6 +938,7 @@ class RealtimeRobotSession:
     async def _handle_tool_call(self, event: Any) -> None:
         call_id = str(event.call_id)
         arguments: dict[str, Any] = {}
+        tool_start = time.monotonic()
         try:
             arguments = json.loads(event.arguments or "{}")
             if not isinstance(arguments, dict):
@@ -898,6 +946,9 @@ class RealtimeRobotSession:
             result = self.motion.submit(str(event.name), arguments)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             result = {"ok": False, "error": str(exc)}
+        self.status.metrics.observe_ms("tool_duration_ms", (time.monotonic() - tool_start) * 1000.0)
+        if not result.get("ok"):
+            self.status.metrics.increment("tool_error_count")
         self.status.record_motion(str(event.name), arguments, bool(result.get("ok")))
         self._pending_tool_outputs.append((self.connection_epoch, call_id, json.dumps(result, ensure_ascii=False)))
 
@@ -933,6 +984,7 @@ class RealtimeRobotSession:
         return int(min(self._playback_pushed_ms, elapsed_ms))
 
     async def _interrupt_assistant(self) -> None:
+        self._barge_in_at = time.monotonic()
         epoch = self.connection_epoch
         generation_active = self.fsm.generation_active()
         self.fsm.transition(SessionState.INTERRUPTING, reason="barge_in")
@@ -951,8 +1003,16 @@ class RealtimeRobotSession:
             else:
                 await self.connection.response.cancel(response_id=response_id)
             self.watchdog.arm("response_cancel")
+        if self._barge_in_at is not None:
+            self.status.metrics.observe_ms(
+                "barge_in_to_cancel_ms", (time.monotonic() - self._barge_in_at) * 1000.0
+            )
 
         await self._clear_playback()
+        if self._barge_in_at is not None:
+            self.status.metrics.observe_ms(
+                "barge_in_to_silence_ms", (time.monotonic() - self._barge_in_at) * 1000.0
+            )
 
         if item_id is not None and audio_end_ms is not None:
             await self.connection.conversation.item.truncate(
@@ -970,6 +1030,7 @@ class RealtimeRobotSession:
 
     async def _handle_playback_overrun(self, dropped_ms: float) -> None:
         self.status.record_event("audio.playback.overrun", dropped_ms=round(dropped_ms, 1))
+        self.status.metrics.increment("playback_overrun_count")
         self.status.add_event("warning", "playback overran; dropping stale audio")
         response_id = self._current_response_id
         if response_id and self.connection is not None:
@@ -1008,6 +1069,9 @@ class RealtimeRobotSession:
         self._vad.reset_turn()
         self._pending_tool_outputs.clear()
         self._interrupted_response_ids.clear()
+        self._speech_ended_at = None
+        self._barge_in_at = None
+        self._first_write_pending = False
         self._current_response_id = None
         self._current_audio_item_id = None
         self._current_audio_content_index = 0
