@@ -160,7 +160,6 @@ class RealtimeRobotSession:
         self._pending_tool_outputs: list[tuple[int, str, str]] = []
         self._playback = PlaybackBuffer()
         self._speaker = SpeakerWorker(self.robot.media, on_write=self._on_speaker_write)
-        self._last_speaker_write_at = time.monotonic()
         self._playback_io_lock = asyncio.Lock()
         self._greeting_sent = False
         self.fsm = SessionStateMachine(on_transition=self._on_fsm_transition)
@@ -198,8 +197,9 @@ class RealtimeRobotSession:
         )
 
     def _on_speaker_write(self, duration_ms: float, received_at: float) -> None:
+        # Per-write latency lives in audio_receive_to_playback_ms below; if a
+        # speaker-staleness metric is ever needed, derive it from SpeakerWorker.last_write_at.
         now = time.monotonic()
-        self._last_speaker_write_at = now
         self.status.metrics.observe_ms("audio_receive_to_playback_ms", (now - received_at) * 1000.0)
         if self._first_write_pending:
             self._first_write_pending = False
