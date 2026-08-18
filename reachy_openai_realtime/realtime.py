@@ -931,7 +931,7 @@ class RealtimeRobotSession:
                 self.watchdog.disarm("response_cancel")
                 response = getattr(event, "response", None)
                 response_id_value = getattr(response, "id", None)
-                response_id = str(response_id_value) if response_id_value else None
+                response_id = str(response_id_value) if response_id_value else "unknown"
                 response_status = getattr(response, "status", None)
                 usage = getattr(response, "usage", None)
                 if usage is not None:

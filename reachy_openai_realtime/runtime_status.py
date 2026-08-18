@@ -6,11 +6,11 @@ from collections import Counter, deque
 from datetime import datetime, timezone
 from typing import Any
 
-_HEALTH_STALE_SECONDS = 10.0
-
 from .observability.events import EventRecorder, redact_secrets
 from .observability.metrics import MetricsRegistry
 from .usage import UsageTracker
+
+_HEALTH_STALE_SECONDS = 10.0
 
 
 def _now() -> str:

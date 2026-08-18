@@ -285,6 +285,7 @@ def test_response_lifecycle_events_recorded() -> None:
 
     completed_fields = next(f for e, f in recorder.events if e == "response.completed")
     assert completed_fields.get("response_id") == response_id
+    assert isinstance(completed_fields.get("response_id"), str)
     assert completed_fields.get("status") == "completed"
 
 
