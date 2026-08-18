@@ -73,7 +73,8 @@ class EventRecorder:
         with self._lock:
             try:
                 self._write_locked(line)
-            except OSError as exc:
+            except Exception as exc:
+                # Spec §18: the recorder must never take down the voice path.
                 logger.debug("event recorder write failed: %s", exc)
 
     def close(self) -> None:

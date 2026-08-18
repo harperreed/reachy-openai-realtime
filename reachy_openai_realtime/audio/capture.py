@@ -78,7 +78,7 @@ class CaptureWorker:
                 time.sleep(0.005)  # SDK example polling cadence
                 continue
             self.last_frame_at = time.monotonic()
-            self.frames_total += 1
+            self.frames_total += 1  # written outside the lock: single writer (capture thread); reads are advisory
             with self._lock:
                 self._frames.append(frame)
                 self._buffered_ms += self._frame_ms(frame)

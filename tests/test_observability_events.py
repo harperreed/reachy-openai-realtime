@@ -63,9 +63,19 @@ def test_rotation_keeps_bounded_files(tmp_path) -> None:
     assert path.stat().st_size < 5_000
 
 
-def test_record_survives_unwritable_directory(tmp_path) -> None:
-    recorder = EventRecorder(tmp_path / "missing" / "deep" / "events.jsonl")
-    recorder.record("app.start")  # must not raise even though parent dirs vanish
+def test_record_survives_real_write_failure(monkeypatch, tmp_path) -> None:
+    # Patch the file's write() so every call raises — this exercises the
+    # broad Exception handler, not just the happy mkdir path.
+    recorder = EventRecorder(tmp_path / "events.jsonl")
+
+    # Trigger file creation by writing one good record first
+    recorder.record("app.start")
+
+    def _always_raise(data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(recorder._file, "write", _always_raise)
+    recorder.record("should_not_raise")  # must not propagate
     recorder.close()
 
 

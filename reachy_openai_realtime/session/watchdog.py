@@ -52,6 +52,11 @@ class DeadlineWatchdog:
         return earliest
 
     async def watch(self, interval_seconds: float = 0.25) -> None:
+        """Poll armed deadlines until one expires, then raise WatchdogTimeout.
+
+        Single concurrent caller assumed — arm/disarm happen on the same event
+        loop; watch() runs as a sibling task in _watchdog_loop.
+        """
         while True:
             hit = self.expired()
             if hit is not None:

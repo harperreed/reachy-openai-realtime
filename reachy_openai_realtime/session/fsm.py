@@ -79,6 +79,13 @@ class SessionStateMachine:
         return self._state
 
     def transition(self, new_state: SessionState, *, reason: str) -> bool:
+        """Move to new_state if the transition is legal.
+
+        Returns True when the transition happened (or was a no-op). Returns
+        False and logs a warning on an illegal transition; raises AssertionError
+        in strict mode (tests). Listener exceptions are caught so a bad callback
+        never aborts the session.
+        """
         old_state = self._state
         if new_state is old_state:
             return True

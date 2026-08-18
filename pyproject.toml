@@ -43,7 +43,7 @@ reachy_openai_realtime = ["**/*"] # Also include all non-.py files
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "ruff>=0.9",
 ]
 
