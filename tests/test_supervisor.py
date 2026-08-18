@@ -178,6 +178,12 @@ def test_supervisor_fires_on_fsm_inactivity(monkeypatch) -> None:
         f"Expected supervisor.intervention in events; got {event_names}"
     )
 
+    # The FSM-inactivity teardown must produce a genuine reconnect — epoch 2 means
+    # the supervisor's WatchdogTimeout caused the run loop to start a fresh attempt.
+    assert session.connection_epoch == 2, (
+        f"Expected epoch 2 after supervisor-triggered reconnect, got {session.connection_epoch}"
+    )
+
 
 def test_supervisor_silent_when_listening(monkeypatch) -> None:
     """Supervisor does NOT fire when FSM stays in LISTENING (the happy idle path)."""

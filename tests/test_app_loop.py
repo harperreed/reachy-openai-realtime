@@ -279,5 +279,14 @@ def test_escalation_fires_and_loop_honors_stop_event(tmp_path, monkeypatch) -> N
         f"Expected supervisor.escalated in events; got {recorded_names}"
     )
 
+    # --- assertion: event reflects the INJECTED budget config (limit=2, window=600.0) ---
+    escalated_fields = next(f for e, f in fake_recorder.events if e == "supervisor.escalated")
+    assert escalated_fields["restarts"] == 2, (
+        f"Expected restarts=2 (injected limit), got {escalated_fields['restarts']}"
+    )
+    assert escalated_fields["window_seconds"] == 600.0, (
+        f"Expected window_seconds=600.0 (injected window), got {escalated_fields['window_seconds']}"
+    )
+
     # --- assertion: stop_event was honored (loop exited) --------------------
     assert stop_event.is_set(), "stop_event was never set — loop may not have continued past escalation"

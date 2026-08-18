@@ -16,12 +16,12 @@ class RestartBudget:
     supervisor.escalated. Never an OS reboot (spec §24)."""
 
     def __init__(self, *, limit: int = 5, window_seconds: float = 600.0) -> None:
-        self._limit = limit
-        self._window = window_seconds
+        self.limit = limit
+        self.window_seconds = window_seconds
         self._restarts: deque[float] = deque()
 
     def record_restart(self, now: float) -> bool:
         self._restarts.append(now)
-        while self._restarts and now - self._restarts[0] > self._window:
+        while self._restarts and now - self._restarts[0] > self.window_seconds:
             self._restarts.popleft()
-        return len(self._restarts) >= self._limit
+        return len(self._restarts) >= self.limit

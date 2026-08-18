@@ -363,7 +363,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     escalate = budget.record_restart(time.monotonic())
                     if escalate:
                         self.runtime_status.record_event(
-                            "supervisor.escalated", restarts=5, window_seconds=600.0
+                            "supervisor.escalated", restarts=budget.limit, window_seconds=budget.window_seconds
                         )
                     try:
                         reachy_mini.media.stop_playing()
@@ -381,7 +381,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     escalate = budget.record_restart(time.monotonic())
                     if escalate:
                         self.runtime_status.record_event(
-                            "supervisor.escalated", restarts=5, window_seconds=600.0
+                            "supervisor.escalated", restarts=budget.limit, window_seconds=budget.window_seconds
                         )
                         try:
                             reachy_mini.media.stop_playing()
