@@ -9,6 +9,20 @@ import numpy as np
 
 from reachy_openai_realtime.session.fsm import LEGAL_TRANSITIONS, SessionState, SessionStateMachine
 
+# ---------------------------------------------------------------------------
+# FakeRecorder — duck-typed EventRecorder stub for flight-recorder assertions
+# ---------------------------------------------------------------------------
+
+
+class FakeRecorder:
+    """Captures record() calls as (event, fields) tuples for test assertions."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def record(self, event: str, **fields) -> None:
+        self.events.append((event, fields))
+
 
 def drive_fsm(fsm: SessionStateMachine, target: SessionState) -> None:
     """Walk fsm to target via a shortest legal path. Raises if unreachable."""

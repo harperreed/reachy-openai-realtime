@@ -142,6 +142,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 ) from exc
             with self._language_lock:
                 self._language = selected.code
+            self.runtime_status.record_event("settings.changed", setting="language", value=selected.code)
             self.runtime_status.add_event(
                 f"会話言語を{selected.label}に変更しました（次の応答から反映）",
                 key="language_changed",
@@ -162,6 +163,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                         detail="カメラを利用できません",
                     )
                 self._camera_enabled = update.enabled
+            self.runtime_status.record_event("settings.changed", setting="camera", enabled=update.enabled)
             if update.enabled:
                 self.runtime_status.add_event(
                     "AIカメラをONにしました（発話開始時に画像をOpenAIへ送信）",
@@ -217,6 +219,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     status_code=500,
                     detail="ロボットの設定領域へ書き込めませんでした",
                 ) from exc
+            self.runtime_status.record_event("settings.changed", setting="api_key", configured=True)
             return {
                 "configured": True,
                 "restart_required": self._session_started,
@@ -232,6 +235,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     status_code=500,
                     detail="保存済みキーを削除できませんでした",
                 ) from exc
+            self.runtime_status.record_event("settings.changed", setting="api_key", configured=False)
             return {
                 "configured": False,
                 "removed": removed,

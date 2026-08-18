@@ -5,7 +5,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from conftest import ScriptedConnection, drive_fsm, realtime_event
+from conftest import FakeRecorder, ScriptedConnection, drive_fsm, realtime_event
 from test_realtime_manual_turn import BargeInMotion, FakeStopEvent
 
 from reachy_openai_realtime.audio.playback import PlaybackBuffer
@@ -237,3 +237,103 @@ def test_response_done_defers_listening_while_audio_still_playing() -> None:
         f"FSM must stay ASSISTANT_SPEAKING while audio drains; got {session.fsm.state}"
     )
     assert session._response_generation_done is True
+
+
+# ---------------------------------------------------------------------------
+# Recorder assertions: response lifecycle events
+# ---------------------------------------------------------------------------
+
+
+def test_response_lifecycle_events_recorded() -> None:
+    """response.created and response.completed fire with correct fields on response.done."""
+    response_id = "resp_lifecycle"
+    created_event = realtime_event(
+        "response.created",
+        response=SimpleNamespace(id=response_id),
+    )
+    done_event = realtime_event(
+        "response.done",
+        response=SimpleNamespace(id=response_id, status="completed", usage=None, output=[]),
+    )
+    drained = asyncio.Event()
+    connection = ScriptedConnection([created_event, done_event], on_drained=lambda: drained.set())
+
+    session = _build_response_done_session(connection, response_id=response_id)
+    session._pending_tool_outputs = []
+    session._speaker_busy_until = float("-inf")
+
+    recorder = FakeRecorder()
+    session.status.attach_recorder(recorder)
+
+    async def run_event_loop() -> None:
+        task = asyncio.ensure_future(session._event_loop(FakeStopEvent()))
+        await asyncio.wait_for(drained.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_event_loop())
+
+    recorded_names = [e for e, _ in recorder.events]
+    assert "response.created" in recorded_names, f"response.created not recorded; got {recorded_names}"
+    assert "response.completed" in recorded_names, f"response.completed not recorded; got {recorded_names}"
+
+    created_fields = next(f for e, f in recorder.events if e == "response.created")
+    assert created_fields.get("response_id") == response_id
+
+    completed_fields = next(f for e, f in recorder.events if e == "response.completed")
+    assert completed_fields.get("response_id") == response_id
+    assert completed_fields.get("status") == "completed"
+
+
+class _SubmittingMotion(BargeInMotion):
+    """Extends BargeInMotion with a submit() stub so _handle_tool_call can run."""
+
+    def submit(self, name: str, arguments: dict) -> dict:
+        return {"ok": True}
+
+
+def test_tool_requested_and_completed_events_recorded() -> None:
+    """tool.requested and tool.completed fire when _handle_tool_call succeeds."""
+    response_id = "resp_tool"
+    tool_event = realtime_event(
+        "response.function_call_arguments.done",
+        response_id=response_id,
+        call_id="call_tool_1",
+        name="set_emotion",
+        arguments='{"emotion": "happy"}',
+    )
+    drained = asyncio.Event()
+    connection = ScriptedConnection([tool_event], on_drained=lambda: drained.set())
+
+    session = _build_response_done_session(connection, response_id=response_id)
+    session.motion = _SubmittingMotion()
+    session._pending_tool_outputs = []
+
+    recorder = FakeRecorder()
+    session.status.attach_recorder(recorder)
+
+    async def run_event_loop() -> None:
+        task = asyncio.ensure_future(session._event_loop(FakeStopEvent()))
+        await asyncio.wait_for(drained.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_event_loop())
+
+    recorded_names = [e for e, _ in recorder.events]
+    assert "tool.requested" in recorded_names, f"tool.requested not recorded; got {recorded_names}"
+    assert "tool.completed" in recorded_names, f"tool.completed not recorded; got {recorded_names}"
+
+    tool_req = next(f for e, f in recorder.events if e == "tool.requested")
+    assert tool_req.get("name") == "set_emotion"
+    assert tool_req.get("call_id") == "call_tool_1"
+
+    tool_done = next(f for e, f in recorder.events if e == "tool.completed")
+    assert tool_done.get("name") == "set_emotion"
+    assert tool_done.get("call_id") == "call_tool_1"

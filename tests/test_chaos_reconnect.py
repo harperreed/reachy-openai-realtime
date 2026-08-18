@@ -4,7 +4,7 @@ import asyncio
 import os
 import threading
 
-from conftest import FakeRealtimeClient, ScriptedConnection, realtime_event
+from conftest import FakeRealtimeClient, FakeRecorder, ScriptedConnection, realtime_event
 from test_realtime_manual_turn import BargeInMotion, FakeMedia, stereo_frame
 
 from reachy_openai_realtime.config import AppConfig
@@ -106,3 +106,29 @@ def test_interrupted_ids_stay_bounded_across_many_interrupts() -> None:
     for index in range(500):
         ids.add(f"resp_{index}")
     assert len(ids) == 32
+
+
+def test_realtime_connected_and_disconnected_events_recorded() -> None:
+    """realtime.connected fires after session.updated; realtime.disconnected fires on teardown."""
+    stop_event = threading.Event()
+    session_updated = realtime_event("session.updated", session=None)
+    conn = ScriptedConnection(
+        [session_updated], on_drained=stop_event.set, raise_after=ConnectionError("closed")
+    )
+    session = build_session([conn])
+    session._sleep_unless_stopped = _instant_sleep
+
+    recorder = FakeRecorder()
+    session.status.attach_recorder(recorder)
+
+    asyncio.run(session.run(stop_event))
+
+    recorded_names = [e for e, _ in recorder.events]
+    assert "realtime.connected" in recorded_names, f"realtime.connected not recorded; got {recorded_names}"
+    assert "realtime.disconnected" in recorded_names, f"realtime.disconnected not recorded; got {recorded_names}"
+
+    connected_fields = next(f for e, f in recorder.events if e == "realtime.connected")
+    disconnected_fields = next(f for e, f in recorder.events if e == "realtime.disconnected")
+    assert "epoch" in connected_fields, "realtime.connected missing epoch"
+    assert "epoch" in disconnected_fields, "realtime.disconnected missing epoch"
+    assert connected_fields["epoch"] == disconnected_fields["epoch"]

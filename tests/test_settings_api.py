@@ -1,3 +1,4 @@
+from conftest import FakeRecorder
 from fastapi.testclient import TestClient
 
 from reachy_openai_realtime.main import ReachyOpenaiRealtime
@@ -74,3 +75,39 @@ def test_settings_api_rejects_short_key_without_echoing_it(tmp_path, monkeypatch
     assert response.status_code == 400
     assert response.json() == {"detail": "APIキーが短すぎます"}
     assert "short" not in response.text
+
+
+def test_settings_changed_events_fire_and_never_leak_key(tmp_path, monkeypatch) -> None:
+    """settings.changed fires for language, camera, api-key set/delete; key never in fields."""
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("REACHY_OPENAI_REALTIME_LANGUAGE", raising=False)
+    fake_key = "sk-test-recorder-abcdefghijklmnopqrstuvwxyz"
+    app = ReachyOpenaiRealtime()
+    recorder = FakeRecorder()
+    app.runtime_status.attach_recorder(recorder)
+    client = TestClient(app.settings_app)
+
+    # language change
+    client.post("/api/config/language", json={"language": "ja"})
+    # api-key set
+    client.post("/api/config/api-key", json={"api_key": fake_key})
+    # api-key delete
+    client.delete("/api/config/api-key")
+
+    changed = [(e, f) for e, f in recorder.events if e == "settings.changed"]
+    assert len(changed) >= 3, f"expected >=3 settings.changed events, got {changed}"
+
+    lang_events = [(e, f) for e, f in changed if f.get("setting") == "language"]
+    assert lang_events, "no settings.changed for language"
+    assert lang_events[0][1]["value"] == "ja"
+
+    key_set_events = [(e, f) for e, f in changed if f.get("setting") == "api_key" and f.get("configured") is True]
+    assert key_set_events, "no settings.changed for api_key set"
+
+    key_del_events = [(e, f) for e, f in changed if f.get("setting") == "api_key" and f.get("configured") is False]
+    assert key_del_events, "no settings.changed for api_key delete"
+
+    # Security: the actual key must never appear in any recorded field value
+    all_field_values = str([f for _, f in recorder.events])
+    assert fake_key not in all_field_values, "fake key leaked into recorder fields"
