@@ -91,6 +91,29 @@ def test_set_phase_emits_recorder_event_with_correct_connected(tmp_path) -> None
     assert phase_events[0]["phase"] == "listening"
 
 
+def test_set_phase_records_only_transitions(tmp_path) -> None:
+    # The mic loop re-asserts LISTENING every audio chunk (~15Hz); the flight
+    # recorder must log status.phase only when phase or connected actually
+    # changes, or events.jsonl fills with identical spam (issue #22).
+    recorder = EventRecorder(tmp_path / "events.jsonl")
+    status = RuntimeStatus()
+    status.attach_recorder(recorder)
+    status.set_phase("listening", "ready", connected=True)
+    status.set_phase("listening", "ready", connected=True)
+    status.set_phase("listening", "ready (threshold -38dBFS)", connected=True)
+    status.set_phase("user_speaking", "voice detected", connected=True)
+    status.set_phase("user_speaking", "voice detected", connected=False)
+    recorder.close()
+
+    lines = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    phase_events = [(e["phase"], e["connected"]) for e in lines if e["event"] == "status.phase"]
+    assert phase_events == [
+        ("listening", True),
+        ("user_speaking", True),
+        ("user_speaking", False),
+    ]
+
+
 def test_record_error_emits_recorder_event(tmp_path) -> None:
     recorder = EventRecorder(tmp_path / "events.jsonl")
     status = RuntimeStatus()

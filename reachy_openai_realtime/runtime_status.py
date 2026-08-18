@@ -84,7 +84,9 @@ class RuntimeStatus:
         detail_params: dict[str, Any] | None = None,
     ) -> None:
         with self._lock:
-            changed = phase != self._phase or detail != self._detail
+            phase_changed = phase != self._phase
+            connected_changed = connected is not None and connected != self._connected
+            changed = phase_changed or detail != self._detail
             self._phase = phase
             self._detail = safe_message(detail)
             self._detail_key = detail_key
@@ -100,7 +102,10 @@ class RuntimeStatus:
                     key=detail_key,
                     params=detail_params,
                 )
-        self.record_event("status.phase", phase=phase, connected=connected_snapshot)
+        # The mic loop re-asserts the current phase every audio chunk (~15Hz);
+        # record to the flight recorder only on a real transition.
+        if phase_changed or connected_changed:
+            self.record_event("status.phase", phase=phase, connected=connected_snapshot)
 
     def record_error(self, error: object) -> None:
         message = safe_message(error)
