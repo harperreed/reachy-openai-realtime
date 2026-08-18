@@ -1,6 +1,6 @@
 import numpy as np
 
-from reachy_openai_realtime.audio import (
+from reachy_openai_realtime.dsp import (
     audio_level_dbfs,
     float32_to_pcm16,
     pcm16_to_float32,

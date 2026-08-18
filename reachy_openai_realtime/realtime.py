@@ -21,7 +21,7 @@ from openai.types.realtime import (
     RealtimeSessionCreateRequestParam,
 )
 
-from .audio import (
+from .dsp import (
     audio_level_dbfs,
     float32_to_pcm16,
     pcm16_to_float32,
