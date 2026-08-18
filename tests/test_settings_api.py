@@ -90,17 +90,23 @@ def test_settings_changed_events_fire_and_never_leak_key(tmp_path, monkeypatch) 
 
     # language change
     client.post("/api/config/language", json={"language": "ja"})
+    # camera disable (enabled=False bypasses the camera-available guard, always fires the event)
+    client.post("/api/config/camera", json={"enabled": False})
     # api-key set
     client.post("/api/config/api-key", json={"api_key": fake_key})
     # api-key delete
     client.delete("/api/config/api-key")
 
     changed = [(e, f) for e, f in recorder.events if e == "settings.changed"]
-    assert len(changed) >= 3, f"expected >=3 settings.changed events, got {changed}"
+    assert len(changed) >= 4, f"expected >=4 settings.changed events, got {changed}"
 
     lang_events = [(e, f) for e, f in changed if f.get("setting") == "language"]
     assert lang_events, "no settings.changed for language"
     assert lang_events[0][1]["value"] == "ja"
+
+    camera_events = [(e, f) for e, f in changed if f.get("setting") == "camera"]
+    assert camera_events, "no settings.changed for camera"
+    assert camera_events[0][1]["enabled"] is False
 
     key_set_events = [(e, f) for e, f in changed if f.get("setting") == "api_key" and f.get("configured") is True]
     assert key_set_events, "no settings.changed for api_key set"

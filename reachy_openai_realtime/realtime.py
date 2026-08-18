@@ -931,7 +931,7 @@ class RealtimeRobotSession:
                 self.status.record_event(
                     "response.completed",
                     response_id=response_id,
-                    status=str(response_status) if response_status else None,
+                    status=str(response_status) if response_status else "unknown",
                 )
                 was_interrupted = bool(
                     response_id and response_id in self._interrupted_response_ids
