@@ -26,3 +26,7 @@
   429 is TRANSIENT and is checked BEFORE the 4xx→FATAL rule. Keep that ordering.
 - Reconnect policy: infinite jittered backoff 1→30 s, reset after 60 s healthy; fatal config
   errors park in `config_error` until settings change (`main.py` fingerprint wait loop).
+- **`uv run <tool>` silently falls back to PATH (mise-global) when the tool isn't in a synced
+  group.** Dev tools (ruff, pytest) live in `[dependency-groups] dev` — never only in an extra.
+  A "clean" check may be a different version than the lock pins; `uv run which <tool>` must
+  point into `.venv`. Canonical check: `uv run ruff check . && uv run pytest`.
