@@ -26,6 +26,10 @@
   429 is TRANSIENT and is checked BEFORE the 4xx→FATAL rule. Keep that ordering.
 - Reconnect policy: infinite jittered backoff 1→30 s, reset after 60 s healthy; fatal config
   errors park in `config_error` until settings change (`main.py` fingerprint wait loop).
+- **"Phase 2" names two different things.** Hardening-spec §29 Phase 2 = motion (issues #13–15).
+  The 2026-08-18 features spec ("Reachy Phase 2 — Remaining Feature Specs") = idle/sleep, external
+  brain, memory, push events (issues #16–20; the verbatim spec lives in those issues' details
+  blocks). Say which one you mean.
 - **`uv run <tool>` silently falls back to PATH (mise-global) when the tool isn't in a synced
   group.** Dev tools (ruff, pytest) live in `[dependency-groups] dev` — never only in an extra.
   A "clean" check may be a different version than the lock pins; `uv run which <tool>` must
