@@ -4,9 +4,10 @@ import asyncio
 import time
 
 import numpy as np
+import pytest
 from conftest import FakeSpeakerMedia, ScriptedConnection, drive_fsm
 
-from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
+from reachy_openai_realtime.audio.capture import AudioPipelineStalled, AudioRecoveryLadder, CaptureWorker
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
 from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
@@ -342,3 +343,61 @@ def test_doa_poller_fallback_does_not_replace_existing_poller() -> None:
     assert session._doa_poller is sentinel
     # The sentinel's start() must never have been called by the fallback
     assert not sentinel.started
+
+
+# ---------------------------------------------------------------------------
+# Bug A: _run_mic_recovery("restart_media") must hold _playback_io_lock
+# ---------------------------------------------------------------------------
+
+
+def _make_mic_recovery_session() -> RealtimeRobotSession:
+    """Minimal session for testing _run_mic_recovery dispatch."""
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.status = RuntimeStatus()
+    session._playback_io_lock = asyncio.Lock()
+    session._mic_ladder = AudioRecoveryLadder()
+    return session
+
+
+def test_run_mic_recovery_restart_media_holds_lock() -> None:
+    """restart_media must hold _playback_io_lock when calling _restart_media_pipeline.
+
+    The Reachy Mini Wireless shares one GStreamer pipeline; concurrent restarts
+    from the record loop and playback loop can corrupt it. This ensures the
+    record-loop path matches the lock discipline of the other two callers.
+    """
+    session = _make_mic_recovery_session()
+
+    lock_was_held = []
+
+    def stub_restart_media_pipeline():
+        lock_was_held.append(session._playback_io_lock.locked())
+
+    session._restart_media_pipeline = stub_restart_media_pipeline
+    session._restart_capture = lambda: None  # not under test here
+
+    asyncio.run(session._run_mic_recovery("restart_media"))
+
+    assert lock_was_held == [True], (
+        "_restart_media_pipeline must be called while _playback_io_lock is held"
+    )
+
+
+def test_run_mic_recovery_restart_capture_calls_restart_capture() -> None:
+    """restart_capture action must call _restart_capture (not _restart_media_pipeline)."""
+    session = _make_mic_recovery_session()
+    called = []
+    session._restart_capture = lambda: called.append("capture")
+    session._restart_media_pipeline = lambda: called.append("media")
+
+    asyncio.run(session._run_mic_recovery("restart_capture"))
+
+    assert called == ["capture"]
+
+
+def test_run_mic_recovery_restart_session_raises() -> None:
+    """restart_session must raise AudioPipelineStalled."""
+    session = _make_mic_recovery_session()
+
+    with pytest.raises(AudioPipelineStalled):
+        asyncio.run(session._run_mic_recovery("restart_session"))

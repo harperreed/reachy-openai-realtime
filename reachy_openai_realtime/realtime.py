@@ -380,19 +380,7 @@ class RealtimeRobotSession:
             sample = await asyncio.to_thread(self._capture.pop, 0.25)
             if sample is None:
                 action = self._mic_ladder.next_action(self._capture.frame_age_seconds())
-                if action == "restart_capture":
-                    self.status.record_event("audio.capture.stalled", action=action)
-                    await asyncio.to_thread(self._restart_capture)
-                    self.status.metrics.increment("mic_restart_count")
-                    self.status.record_event("audio.capture.restarted", action=action)
-                elif action == "restart_media":
-                    self.status.record_event("audio.capture.stalled", action=action)
-                    await asyncio.to_thread(self._restart_media_pipeline)
-                    self.status.metrics.increment("mic_restart_count")
-                    self.status.record_event("audio.capture.restarted", action=action)
-                elif action == "restart_session":
-                    self.status.record_event("audio.capture.stalled", action=action)
-                    raise AudioPipelineStalled("microphone frames stopped; capture and media restarts failed")
+                await self._run_mic_recovery(action)
                 continue
             if not microphone_ready:
                 microphone_ready = True
@@ -585,6 +573,28 @@ class RealtimeRobotSession:
                     }
                 )
                 self.status.record_response_request()
+
+    async def _run_mic_recovery(self, action: str) -> None:
+        """Dispatch a mic-ladder escalation action from the record loop.
+
+        restart_media holds _playback_io_lock so the record-loop and
+        playback-loop paths cannot simultaneously tear down the shared
+        GStreamer pipeline on the Reachy Mini Wireless.
+        """
+        if action == "restart_capture":
+            self.status.record_event("audio.capture.stalled", action=action)
+            await asyncio.to_thread(self._restart_capture)
+            self.status.metrics.increment("mic_restart_count")
+            self.status.record_event("audio.capture.restarted", action=action)
+        elif action == "restart_media":
+            self.status.record_event("audio.capture.stalled", action=action)
+            async with self._playback_io_lock:
+                await asyncio.to_thread(self._restart_media_pipeline)
+            self.status.metrics.increment("mic_restart_count")
+            self.status.record_event("audio.capture.restarted", action=action)
+        elif action == "restart_session":
+            self.status.record_event("audio.capture.stalled", action=action)
+            raise AudioPipelineStalled("microphone frames stopped; capture and media restarts failed")
 
     def _restart_capture(self) -> None:
         self.robot.media.stop_recording()
