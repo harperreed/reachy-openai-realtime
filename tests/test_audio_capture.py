@@ -128,3 +128,21 @@ def test_ladder_resets_on_healthy_frames() -> None:
 def test_audio_pipeline_stalled_is_a_runtime_error() -> None:
     with pytest.raises(RuntimeError):
         raise AudioPipelineStalled("mic dead")
+
+
+def test_start_twice_raises() -> None:
+    worker = CaptureWorker(ScriptedMedia())
+    worker.start()
+    try:
+        with pytest.raises(RuntimeError, match="already started"):
+            worker.start()
+    finally:
+        worker.close()
+
+
+def test_start_after_close_is_allowed() -> None:
+    worker = CaptureWorker(ScriptedMedia())
+    worker.start()
+    worker.close()
+    worker.start()  # close() resets _thread; restart must stay legal
+    worker.close()

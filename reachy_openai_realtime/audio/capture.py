@@ -37,6 +37,8 @@ class CaptureWorker:
         self.dropped_frames = 0
 
     def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("CaptureWorker already started")
         self._thread = threading.Thread(target=self._run, name="audio-capture", daemon=True)
         self._thread.start()
 
