@@ -1,6 +1,7 @@
 # ABOUTME: Tests for RecentIds, connection_epoch, and reset_connection_state.
 # ABOUTME: Verifies bounded ID tracking, stale-epoch filtering, and canonical state wipe.
 import asyncio
+import logging
 import time
 
 import numpy as np
@@ -401,3 +402,81 @@ def test_run_mic_recovery_restart_session_raises() -> None:
 
     with pytest.raises(AudioPipelineStalled):
         asyncio.run(session._run_mic_recovery("restart_session"))
+
+
+# ---------------------------------------------------------------------------
+# _clear_playback: split exception handlers (issue #1 + comment fix from #5)
+# ---------------------------------------------------------------------------
+
+
+def _raise_runtime_error() -> None:
+    raise RuntimeError("injected failure")
+
+
+def _make_clear_playback_session() -> RealtimeRobotSession:
+    """Minimal session for testing _clear_playback handler behaviour.
+
+    Wires the real _playback, _speaker, and _playback_io_lock; media.audio
+    exposes a working clear_player so tests can override just the piece under
+    scrutiny.
+    """
+
+    class _ClearPlayerAudio:
+        """Audio stub with a working clear_player (overrideable per-test)."""
+
+        def clear_player(self) -> None:
+            pass
+
+    class _Media:
+        def __init__(self) -> None:
+            self.audio = _ClearPlayerAudio()
+            self._start_recording_calls = 0
+
+        def start_recording(self) -> None:
+            self._start_recording_calls += 1
+
+    media = _Media()
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.robot = type("Robot", (), {"media": media})()
+    session._playback = PlaybackBuffer()
+    session._speaker = SpeakerWorker(FakeSpeakerMedia())
+    session._playback_io_lock = asyncio.Lock()
+    return session
+
+
+def test_clear_playback_logs_start_recording_failure_at_warning(caplog) -> None:
+    """When start_recording raises after a flush, the failure must be visible at WARNING.
+
+    The current code logs everything at DEBUG under 'clear_player failed', which
+    means a dead mic after a barge-in leaves no trace at default log levels.
+    """
+    session = _make_clear_playback_session()
+    session.robot.media.start_recording = _raise_runtime_error
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(session._clear_playback())
+
+    messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("start_recording failed" in m and "mic stall ladder" in m for m in messages)
+
+
+def test_clear_playback_clear_player_failure_stays_debug_and_start_recording_still_runs(
+    caplog,
+) -> None:
+    """When only clear_player fails: no WARNING fires, and start_recording still runs.
+
+    The Wireless shares one GStreamer pipeline — start_recording must run even
+    when clear_player raises, so the mic side is always reasserted.
+    """
+    session = _make_clear_playback_session()
+    session.robot.media.audio.clear_player = _raise_runtime_error
+
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(session._clear_playback())
+
+    warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert not any("start_recording failed" in m for m in warning_messages), (
+        "clear_player failure must not produce a WARNING"
+    )
+    # start_recording must still have been called despite the clear_player failure
+    assert session.robot.media._start_recording_calls == 1

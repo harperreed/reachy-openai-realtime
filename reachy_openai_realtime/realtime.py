@@ -1128,12 +1128,16 @@ class RealtimeRobotSession:
         if audio is not None and hasattr(audio, "clear_player"):
             try:
                 async with self._playback_io_lock:
-                    try:
-                        await asyncio.to_thread(audio.clear_player)
-                    finally:
-                        # The Wireless local backend shares one GStreamer pipeline
-                        # for capture and playback. Reassert PLAYING after a flush
-                        # so barge-in never leaves the microphone stalled.
-                        await asyncio.to_thread(self.robot.media.start_recording)
+                    await asyncio.to_thread(audio.clear_player)
             except Exception:
                 logger.debug("clear_player failed", exc_info=True)
+            finally:
+                # Reassert RECORDING after a flush: the Wireless shares one GStreamer
+                # pipeline and clear_player can leave the mic side stopped (gotchas.md).
+                try:
+                    await asyncio.to_thread(self.robot.media.start_recording)
+                except Exception:
+                    logger.warning(
+                        "start_recording failed after playback flush; mic stall ladder will recover",
+                        exc_info=True,
+                    )
