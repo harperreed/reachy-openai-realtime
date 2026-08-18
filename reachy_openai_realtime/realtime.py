@@ -472,6 +472,7 @@ class RealtimeRobotSession:
                     response_active=self.fsm.generation_active(),
                     doa_speech_detected=doa_speech_detected,
                     doa_angle_degrees=doa_angle_degrees,
+                    vad_backend="respeaker+energy" if self._doa_poller is not None else "energy",
                 )
                 self.status.set_component_health("microphone", self._capture.frame_age_seconds() < 5.0)
                 self.status.set_component_health("speaker", self._speaker.alive())

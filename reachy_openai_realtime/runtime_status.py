@@ -166,6 +166,7 @@ class RuntimeStatus:
         response_active: bool,
         doa_speech_detected: bool | None = None,
         doa_angle_degrees: float | None = None,
+        vad_backend: str = "energy",
     ) -> None:
         level = round(max(-80.0, min(0.0, dbfs)), 1)
         with self._lock:
@@ -191,6 +192,7 @@ class RuntimeStatus:
                     if doa_angle_degrees is not None
                     else None
                 ),
+                "vad_backend": vad_backend,
             }
             self._updated_at = _now()
 

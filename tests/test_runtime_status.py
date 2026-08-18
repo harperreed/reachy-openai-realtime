@@ -167,3 +167,33 @@ def test_snapshot_includes_cumulative_response_usage() -> None:
     assert snapshot["usage"]["lifetime"]["output_tokens"] == 10
     assert snapshot["usage"]["lifetime"]["estimated_cost_usd"] > 0
     assert snapshot["events"][0]["key"] == "event_usage_recorded"
+
+
+def test_record_audio_sample_exposes_vad_backend() -> None:
+    status = RuntimeStatus()
+    # Default: no vad_backend kwarg — should surface "energy" in snapshot
+    status.record_audio_sample(
+        dbfs=-30.0,
+        channel_dbfs=[-30.0, -35.0],
+        selected_channel=0,
+        noise_floor_dbfs=-50.0,
+        start_threshold_dbfs=-40.0,
+        continue_threshold_dbfs=-45.0,
+        input_enabled=True,
+        response_active=False,
+    )
+    assert status.snapshot()["vad"]["vad_backend"] == "energy"
+
+    # Explicit: passing "respeaker+energy" should round-trip through the snapshot
+    status.record_audio_sample(
+        dbfs=-30.0,
+        channel_dbfs=[-30.0, -35.0],
+        selected_channel=0,
+        noise_floor_dbfs=-50.0,
+        start_threshold_dbfs=-40.0,
+        continue_threshold_dbfs=-45.0,
+        input_enabled=True,
+        response_active=False,
+        vad_backend="respeaker+energy",
+    )
+    assert status.snapshot()["vad"]["vad_backend"] == "respeaker+energy"
