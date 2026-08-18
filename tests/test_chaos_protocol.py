@@ -18,18 +18,14 @@ from reachy_openai_realtime.vad import EnergyTurnDetector
 from test_realtime_manual_turn import BargeInMotion, FakeStopEvent
 
 
-def test_duplicate_response_done_flushes_tool_outputs_once() -> None:
-    done = realtime_event(
-        "response.done",
-        response=SimpleNamespace(id="resp_dup", status="completed", usage=None, output=[]),
-    )
-    connection = ScriptedConnection([done, done])
+def _build_response_done_session(connection: ScriptedConnection, response_id: str = "resp_dup") -> RealtimeRobotSession:
+    """Construct a minimal session wired to `connection` ready to handle response.done.
+
+    Attributes mirror what realtime.py's response.done branch reads (lines 890-910).
+    If a new attribute is added upstream, pytest's AttributeError names it — add it
+    here with the neutral value from tests/test_realtime_reset.py's dirty-session builder.
+    """
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
-    # Attributes below mirror what the response.done path reads (realtime.py:708-756
-    # pre-rewrite): config/_language_provider feed _flush_tool_outputs' instructions,
-    # motion/_vad/_speaker_busy_until feed the no-more-audio branch. If the rewrite
-    # added a read this misses, pytest's AttributeError names it — add it with the
-    # neutral value used in tests/test_realtime_reset.py's dirty-session builder.
     session.status = RuntimeStatus()
     session.connection = connection
     session.config = AppConfig()
@@ -41,7 +37,7 @@ def test_duplicate_response_done_flushes_tool_outputs_once() -> None:
     session.watchdog = DeadlineWatchdog()
     session.connection_epoch = 1
     session._response_generation_done = False
-    session._current_response_id = "resp_dup"
+    session._current_response_id = response_id
     session._interrupted_response_ids = RecentIds()
     session._pending_tool_outputs = [(1, "call_1", '{"ok": true}')]
     session._playback = PlaybackBuffer()
@@ -52,11 +48,34 @@ def test_duplicate_response_done_flushes_tool_outputs_once() -> None:
     session._speech_ended_at = None
     session._barge_in_at = None
     session._first_write_pending = False
+    return session
+
+
+def test_pending_tool_outputs_drained_once_on_repeated_response_done() -> None:
+    """Two identical response.done events yield exactly one flush, not two.
+
+    Mechanism: _flush_tool_outputs atomically swaps _pending_tool_outputs to []
+    (realtime.py swap-and-drain: `pending, self._pending_tool_outputs = self._pending_tool_outputs, []`).
+    The second response.done sees an empty list and takes the no-tool branch — no
+    second flush, no second response.create.  RecentIds plays no role here.
+    """
+    done = realtime_event(
+        "response.done",
+        response=SimpleNamespace(id="resp_dup", status="completed", usage=None, output=[]),
+    )
+    drained = asyncio.Event()
+    connection = ScriptedConnection([done, done], on_drained=lambda: drained.set())
+    session = _build_response_done_session(connection, response_id="resp_dup")
 
     async def run_event_loop() -> None:
-        # After both scripted events the connection idles forever; cancel it.
         task = asyncio.ensure_future(session._event_loop(FakeStopEvent()))
-        await asyncio.sleep(0.3)
+        # Wait until the ScriptedConnection has yielded all scripted events.
+        # on_drained fires after the last event is YIELDED (not yet fully handled),
+        # so we give the handler loop a couple of zero-cost beats to finish processing
+        # before we cancel.
+        await asyncio.wait_for(drained.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -70,6 +89,47 @@ def test_duplicate_response_done_flushes_tool_outputs_once() -> None:
     ]
     assert len(tool_items) == 1
     assert len(connection.response.created) == 1
+
+
+def test_interrupted_response_id_skips_flush() -> None:
+    """A response.done whose id is in _interrupted_response_ids never flushes tool outputs.
+
+    Mechanism: the was_interrupted guard (realtime.py ~line 890-906) short-circuits
+    before reaching the _flush_tool_outputs branch.  Even with pending tool outputs,
+    0 function_call_output items are created and 0 response.create calls are made.
+    """
+    response_id = "resp_interrupted"
+    done = realtime_event(
+        "response.done",
+        response=SimpleNamespace(id=response_id, status="completed", usage=None, output=[]),
+    )
+    drained = asyncio.Event()
+    connection = ScriptedConnection([done], on_drained=lambda: drained.set())
+    session = _build_response_done_session(connection, response_id=response_id)
+    # Seed the interrupted set — this is the mechanism under test.
+    # The response.done handler will take the was_interrupted branch and skip flush.
+    session._interrupted_response_ids.add(response_id)
+
+    async def run_event_loop() -> None:
+        task = asyncio.ensure_future(session._event_loop(FakeStopEvent()))
+        # Same choreography as the drain-once test: wait for all events to be yielded,
+        # give the handler a couple of zero-cost turns to finish, then cancel.
+        await asyncio.wait_for(drained.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_event_loop())
+
+    tool_items = [
+        kwargs
+        for kwargs in connection.conversation.item.created
+        if kwargs.get("item", {}).get("type") == "function_call_output"
+    ]
+    assert len(tool_items) == 0
+    assert len(connection.response.created) == 0
 
 
 def test_session_updated_timeout_tears_down_connection() -> None:
