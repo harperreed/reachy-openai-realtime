@@ -26,3 +26,44 @@ def test_attach_file_logging_creates_config_dir_on_fresh_install(monkeypatch, tm
     finally:
         logging.getLogger().removeHandler(handler)
         handler.close()
+
+
+def test_attach_file_logging_redacts_message_keys(monkeypatch, tmp_path) -> None:
+    fresh = tmp_path / "apps" / "reachy_openai_realtime"
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(fresh))
+    message_key = "sk-test-message-abcdefghijklmnop"
+
+    handler = attach_file_logging()
+    logger = logging.getLogger("application-log-redaction-test")
+    logger.setLevel(logging.INFO)
+    try:
+        logger.error("message key: %s", message_key)
+        handler.flush()
+        contents = log_path().read_text(encoding="utf-8")
+        assert message_key not in contents
+        assert "sk-***" in contents
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+
+
+def test_attach_file_logging_redacts_exception_keys(monkeypatch, tmp_path) -> None:
+    fresh = tmp_path / "apps" / "reachy_openai_realtime"
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(fresh))
+    exception_key = "sk-test-exception-abcdefghijklmnop"
+
+    handler = attach_file_logging()
+    logger = logging.getLogger("application-log-redaction-test")
+    logger.setLevel(logging.INFO)
+    try:
+        try:
+            raise RuntimeError(f"exception key: {exception_key}")
+        except RuntimeError:
+            logger.exception("request failed")
+        handler.flush()
+        contents = log_path().read_text(encoding="utf-8")
+        assert exception_key not in contents
+        assert "sk-***" in contents
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
