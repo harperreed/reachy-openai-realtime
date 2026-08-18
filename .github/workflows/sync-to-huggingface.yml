@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Sync Space
-        uses: huggingface/hub-sync@v0.1.0
+        uses: huggingface/hub-sync@v0.2.1
         with:
           github_repo_id: ${{ github.repository }}
           huggingface_repo_id: ${{ vars.HF_REPO_ID }}
