@@ -49,7 +49,7 @@ def log_path() -> Path:
     return config_dir() / "application.log"
 
 
-def _prepare_config_dir() -> Path:
+def prepare_config_dir() -> Path:
     target_dir = config_dir()
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     target_dir.chmod(0o700)
@@ -61,7 +61,7 @@ def _migrate_legacy_config() -> Path | None:
     legacy = legacy_config_dir() / ".env"
     if target.exists() or not legacy.exists() or target == legacy:
         return target if target.exists() else None
-    target_dir = _prepare_config_dir()
+    target_dir = prepare_config_dir()
     temp_path = target_dir / ".env.tmp"
     shutil.copyfile(legacy, temp_path)
     temp_path.chmod(0o600)
@@ -95,7 +95,7 @@ def _validated_api_key(api_key: str) -> str:
 
 
 def _save_env_value(name: str, value: str) -> Path:
-    target_dir = _prepare_config_dir()
+    target_dir = prepare_config_dir()
     target = env_path()
     existing = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
     updated: list[str] = []

@@ -24,6 +24,7 @@ from .settings import (
     events_path,
     load_instance_env,
     log_path,
+    prepare_config_dir,
     remove_api_key,
     save_api_key,
     save_language,
@@ -37,6 +38,19 @@ try:
     APP_VERSION = version("reachy_openai_realtime")
 except PackageNotFoundError:
     APP_VERSION = "development"
+
+
+def attach_file_logging() -> RotatingFileHandler:
+    """Attach the rotating application.log handler for this app process.
+
+    A factory-fresh install has no config directory yet; create it here so the
+    handler's eager open cannot kill the app before the first log line.
+    """
+    prepare_config_dir()
+    handler = RotatingFileHandler(log_path(), maxBytes=2_000_000, backupCount=2)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+    return handler
 
 
 class ApiKeyUpdate(BaseModel):
@@ -236,9 +250,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         recorder = EventRecorder(events_path())
         self.runtime_status.attach_recorder(recorder)
-        file_handler = RotatingFileHandler(log_path(), maxBytes=2_000_000, backupCount=2)
-        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-        logging.getLogger().addHandler(file_handler)
+        file_handler = attach_file_logging()
         recorder.record("app.start")
         self._recorder = recorder
 
