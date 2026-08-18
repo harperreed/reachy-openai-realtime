@@ -16,6 +16,7 @@ from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
 from .motion import MotionController
 from .observability.events import EventRecorder
+from .audio.capture import AudioPipelineStalled
 from .realtime import RealtimeRobotSession
 from .session.recovery import SessionOutcome
 from .runtime_status import RuntimeStatus
@@ -321,6 +322,16 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 )
                 try:
                     outcome = asyncio.run(session.run(stop_event))
+                except AudioPipelineStalled:
+                    self.runtime_status.add_event("warning", "audio pipeline stalled; restarting app session")
+                    try:
+                        reachy_mini.media.stop_playing()
+                        reachy_mini.media.stop_recording()
+                        reachy_mini.media.start_recording()
+                        reachy_mini.media.start_playing()
+                    except Exception:
+                        logger.exception("media re-init after stall failed")
+                    continue
                 except Exception as exc:
                     logger.exception("Realtime session stopped with an error")
                     self.runtime_status.record_error(exc)

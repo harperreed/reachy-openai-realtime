@@ -21,6 +21,7 @@ from openai.types.realtime import (
     RealtimeSessionCreateRequestParam,
 )
 
+from .audio.capture import AudioPipelineStalled, AudioRecoveryLadder, CaptureWorker
 from .dsp import (
     audio_level_dbfs,
     float32_to_pcm16,
@@ -169,6 +170,8 @@ class RealtimeRobotSession:
         self._doa_poller: DoAPoller | None = None
         self._vad = EnergyTurnDetector()
         self.watchdog = DeadlineWatchdog()
+        self._mic_ladder = AudioRecoveryLadder()
+        self._capture: CaptureWorker | None = None
 
     def _on_fsm_transition(self, old_state: SessionState, new_state: SessionState, reason: str) -> None:
         self.status.record_event(
@@ -176,39 +179,47 @@ class RealtimeRobotSession:
         )
 
     async def run(self, stop_event: Any) -> SessionOutcome:
-        backoff = BackoffPolicy()
-        while not stop_event.is_set():
-            self.connection_epoch += 1
-            self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
-            self.status.record_event("realtime.connecting", epoch=self.connection_epoch)
-            connected_at = time.monotonic()
-            error: BaseException | None = None
-            try:
-                await self._run_connection(stop_event)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                error = exc
-            if stop_event.is_set():
-                break
-            self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
+        self._capture = CaptureWorker(self.robot.media)
+        self._capture.start()
+        try:
+            backoff = BackoffPolicy()
+            while not stop_event.is_set():
+                self.connection_epoch += 1
+                self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
+                self.status.record_event("realtime.connecting", epoch=self.connection_epoch)
+                connected_at = time.monotonic()
+                error: BaseException | None = None
+                try:
+                    await self._run_connection(stop_event)
+                except asyncio.CancelledError:
+                    raise
+                except AudioPipelineStalled:
+                    raise  # escalation: main.py rebuilds the entire app session (mic ladder attempt 3)
+                except Exception as exc:
+                    error = exc
+                if stop_event.is_set():
+                    break
+                self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
+                await self.reset_connection_state()
+                if error is not None:
+                    self.status.record_error(f"realtime connection failed: {error}")
+                    if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
+                        self.status.set_phase("error", "設定エラーが発生しました", connected=False, detail_key="detail_error")
+                        self.status.record_event("realtime.error", fatal=True, message=str(error))
+                        self.fsm.transition(SessionState.STOPPING, reason="fatal_config_error")
+                        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+                        return SessionOutcome.FATAL_CONFIG
+                backoff.note_session_duration(time.monotonic() - connected_at)
+                delay = backoff.next_delay()
+                self.status.record_event("realtime.reconnect", delay_seconds=round(delay, 2))
+                await self._sleep_unless_stopped(stop_event, delay)
+            self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
             await self.reset_connection_state()
-            if error is not None:
-                self.status.record_error(f"realtime connection failed: {error}")
-                if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
-                    self.status.set_phase("error", "設定エラーが発生しました", connected=False, detail_key="detail_error")
-                    self.status.record_event("realtime.error", fatal=True, message=str(error))
-                    self.fsm.transition(SessionState.STOPPING, reason="fatal_config_error")
-                    self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
-                    return SessionOutcome.FATAL_CONFIG
-            backoff.note_session_duration(time.monotonic() - connected_at)
-            delay = backoff.next_delay()
-            self.status.record_event("realtime.reconnect", delay_seconds=round(delay, 2))
-            await self._sleep_unless_stopped(stop_event, delay)
-        self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
-        await self.reset_connection_state()
-        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
-        return SessionOutcome.STOPPED
+            self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+            return SessionOutcome.STOPPED
+        finally:
+            self._capture.close()
+            self._capture = None
 
     async def _sleep_unless_stopped(self, stop_event: Any, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -326,9 +337,20 @@ class RealtimeRobotSession:
                 doa_poller.wait_for_initial_read()
                 self._doa_poller = doa_poller
         while not stop_event.is_set():
-            sample = await asyncio.to_thread(self.robot.media.get_audio_sample)
+            sample = await asyncio.to_thread(self._capture.pop, 0.25)
             if sample is None:
-                await asyncio.sleep(0.005)
+                action = self._mic_ladder.next_action(self._capture.frame_age_seconds())
+                if action == "restart_capture":
+                    self.status.record_event("audio.capture.stalled", action=action)
+                    await asyncio.to_thread(self._restart_capture)
+                    self.status.record_event("audio.capture.restarted", action=action)
+                elif action == "restart_media":
+                    self.status.record_event("audio.capture.stalled", action=action)
+                    await asyncio.to_thread(self._restart_media_pipeline)
+                    self.status.record_event("audio.capture.restarted", action=action)
+                elif action == "restart_session":
+                    self.status.record_event("audio.capture.stalled", action=action)
+                    raise AudioPipelineStalled("microphone frames stopped; capture and media restarts failed")
                 continue
             if not microphone_ready:
                 microphone_ready = True
@@ -507,6 +529,16 @@ class RealtimeRobotSession:
                 )
                 self.watchdog.disarm("input_append")
                 self.status.record_response_request()
+
+    def _restart_capture(self) -> None:
+        self.robot.media.stop_recording()
+        self.robot.media.start_recording()
+
+    def _restart_media_pipeline(self) -> None:
+        self.robot.media.stop_playing()
+        self.robot.media.stop_recording()
+        self.robot.media.start_recording()
+        self.robot.media.start_playing()
 
     async def _append_input_audio(self, encoded: str) -> None:
         await asyncio.wait_for(

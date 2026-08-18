@@ -32,8 +32,16 @@ def make_session(connect_error: Exception, attempts: list[int]) -> RealtimeRobot
         def set_speaking_enabled(self, enabled: bool) -> None:
             pass
 
+    class _FakeMedia:
+        def get_input_audio_samplerate(self) -> int:
+            return 16_000
+
+        def get_audio_sample(self):
+            return None
+
+    robot = type("Robot", (), {"media": _FakeMedia()})()
     session = RealtimeRobotSession(
-        robot=None,
+        robot=robot,
         motion=_FakeMotion(),
         config=AppConfig(),
         status=RuntimeStatus(),

@@ -5,6 +5,7 @@ import time
 
 from conftest import drive_fsm
 
+from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
@@ -63,7 +64,11 @@ def test_manual_turn_walks_listening_speaking_waiting() -> None:
     session = make_session(frames, stop_event)
     drive_fsm(session.fsm, SessionState.LISTENING)
 
+    session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
+    session._mic_ladder = AudioRecoveryLadder()
+    session._capture.start()
     asyncio.run(session._record_loop(stop_event))
+    session._capture.close()
 
     assert session.connection.input_audio_buffer.committed == 1
     assert session.connection.response.created == 1
@@ -78,7 +83,11 @@ def test_frames_ignored_while_waiting_for_response() -> None:
     session.robot = type("Robot", (), {"media": ExhaustionStopMedia(frames, stop_event)})()
     drive_fsm(session.fsm, SessionState.WAITING_RESPONSE)
 
+    session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
+    session._mic_ladder = AudioRecoveryLadder()
+    session._capture.start()
     asyncio.run(session._record_loop(stop_event))
+    session._capture.close()
 
     assert session.connection.input_audio_buffer.appended == 0
     assert session.connection.input_audio_buffer.committed == 0

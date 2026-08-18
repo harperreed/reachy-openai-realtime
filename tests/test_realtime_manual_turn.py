@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from conftest import drive_fsm
+from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
@@ -212,7 +213,11 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     session._vad = EnergyTurnDetector()
     session.watchdog = DeadlineWatchdog()
 
+    session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
+    session._mic_ladder = AudioRecoveryLadder()
+    session._capture.start()
     asyncio.run(session._record_loop(stop_event))
+    session._capture.close()
 
     assert session.connection.input_audio_buffer.appended > 0
     assert session.connection.input_audio_buffer.committed == 1
@@ -364,7 +369,11 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session._vad = EnergyTurnDetector()
     session.watchdog = DeadlineWatchdog()
 
+    session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
+    session._mic_ladder = AudioRecoveryLadder()
+    session._capture.start()
     asyncio.run(session._record_loop(stop_event))
+    session._capture.close()
 
     assert session.connection.response.cancelled == ["resp_playing"]
     assert session.connection.input_audio_buffer.appended > 0
