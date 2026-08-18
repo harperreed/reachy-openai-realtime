@@ -1,7 +1,6 @@
 # ABOUTME: Chaos/integration tests for the run() reconnect loop. Exercises the real
 # ABOUTME: wiring with scripted Realtime connections; verifies no thread or state leaks.
 import asyncio
-import os
 import threading
 
 import pytest
@@ -42,20 +41,20 @@ async def _instant_sleep(stop_event, seconds: float) -> None:
     await asyncio.sleep(0)
 
 
-def build_session(connections: list[ScriptedConnection]) -> RealtimeRobotSession:
+def build_session(connections: list[ScriptedConnection], monkeypatch) -> RealtimeRobotSession:
     """Full session through the REAL constructor (chaos tests exercise real wiring).
     __init__ signature (realtime.py:101): (robot, motion, config, status,
     language_provider=None, camera_enabled=None, capture_camera_jpeg=None); it
     builds a real AsyncOpenAI client internally, which demands an API key env
-    var — hence the setdefault. The fake client is swapped in afterwards."""
-    os.environ.setdefault("OPENAI_API_KEY", "sk-test-chaos-key-0000000000")
+    var — hence the setenv. The fake client is swapped in afterwards."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-chaos-key-0000000000")
     robot = type("Robot", (), {"media": ChaosMedia([stereo_frame(-60.0) for _ in range(5)])})()
     session = RealtimeRobotSession(robot, BargeInMotion(), AppConfig(), RuntimeStatus())
     session.client = FakeRealtimeClient(connections)
     return session
 
 
-def test_disconnect_while_listening_reconnects_with_fresh_epoch() -> None:
+def test_disconnect_while_listening_reconnects_with_fresh_epoch(monkeypatch) -> None:
     stop_event = threading.Event()
     session_updated = realtime_event("session.updated", session=None)
     first = ScriptedConnection([session_updated], raise_after=ConnectionError("wifi died"))
@@ -66,7 +65,7 @@ def test_disconnect_while_listening_reconnects_with_fresh_epoch() -> None:
     second = ScriptedConnection(
         [session_updated], on_drained=stop_event.set, raise_after=ConnectionError("server closed")
     )
-    session = build_session([first, second])
+    session = build_session([first, second], monkeypatch)
     session._sleep_unless_stopped = _instant_sleep  # collapse backoff delay
 
     outcome = asyncio.run(session.run(stop_event))
@@ -78,10 +77,10 @@ def test_disconnect_while_listening_reconnects_with_fresh_epoch() -> None:
     assert counters["reconnect_count"] == 1  # attempt 2 was a reconnect; stop pre-empts attempt 3
 
 
-def test_ten_transient_failures_do_not_leak_threads_or_state() -> None:
+def test_ten_transient_failures_do_not_leak_threads_or_state(monkeypatch) -> None:
     stop_event = threading.Event()
     attempts: list[int] = []
-    session = build_session([])  # _run_connection is stubbed; connect() is never reached
+    session = build_session([], monkeypatch)  # _run_connection is stubbed; connect() is never reached
 
     async def failing_run_connection(stop) -> None:
         attempts.append(session.connection_epoch)
@@ -110,14 +109,14 @@ def test_interrupted_ids_stay_bounded_across_many_interrupts() -> None:
     assert len(ids) == 32
 
 
-def test_realtime_connected_and_disconnected_events_recorded() -> None:
+def test_realtime_connected_and_disconnected_events_recorded(monkeypatch) -> None:
     """realtime.connected fires after session.updated; realtime.disconnected fires on teardown."""
     stop_event = threading.Event()
     session_updated = realtime_event("session.updated", session=None)
     conn = ScriptedConnection(
         [session_updated], on_drained=stop_event.set, raise_after=ConnectionError("closed")
     )
-    session = build_session([conn])
+    session = build_session([conn], monkeypatch)
     session._sleep_unless_stopped = _instant_sleep
 
     recorder = FakeRecorder()
@@ -166,7 +165,7 @@ def test_watchdog_fires_reconnect_and_records_events(monkeypatch) -> None:
         [session_updated], on_drained=stop_event.set, raise_after=ConnectionError("server closed")
     )
 
-    session = build_session([first, second])
+    session = build_session([first, second], monkeypatch)
     session._sleep_unless_stopped = _instant_sleep  # collapse reconnect backoff
 
     recorder = FakeRecorder()
@@ -209,7 +208,7 @@ def test_audio_pipeline_stalled_escalates_and_cleans_up(monkeypatch) -> None:
     """AudioRecoveryLadder walks restart_capture → restart_media → restart_session fast
     (ladder thresholds injected at ~0 ms); session.run() raises AudioPipelineStalled;
     capture/speaker threads are joined afterwards."""
-    os.environ.setdefault("OPENAI_API_KEY", "sk-test-chaos-key-0000000000")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-chaos-key-0000000000")
 
     # Build a session with media that never yields audio frames.
     robot = type("Robot", (), {"media": EmptyChaosMedia()})()
