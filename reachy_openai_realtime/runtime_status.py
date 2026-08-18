@@ -87,6 +87,7 @@ class RuntimeStatus:
             self._detail_params = dict(detail_params or {})
             if connected is not None:
                 self._connected = connected
+            connected_snapshot = self._connected
             self._updated_at = _now()
             if event and changed:
                 self._append_event_locked(
@@ -95,7 +96,7 @@ class RuntimeStatus:
                     key=detail_key,
                     params=detail_params,
                 )
-        self.record_event("status.phase", phase=phase, connected=self._connected)
+        self.record_event("status.phase", phase=phase, connected=connected_snapshot)
 
     def record_error(self, error: object) -> None:
         message = safe_message(error)

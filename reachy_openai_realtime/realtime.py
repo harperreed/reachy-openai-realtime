@@ -182,6 +182,7 @@ class RealtimeRobotSession:
         self.watchdog = DeadlineWatchdog()
         self._mic_ladder = AudioRecoveryLadder()
         self._capture: CaptureWorker | None = None
+        self._connected_at: float | None = None
         self._speech_ended_at: float | None = None
         self._barge_in_at: float | None = None
         self._first_write_pending = False
@@ -361,14 +362,20 @@ class RealtimeRobotSession:
         doa_speech_detected: bool | None = None
         doa_angle_degrees: float | None = None
         last_doa_update = 0.0
-        doa_poller = getattr(self, "_doa_poller", None)
+        doa_poller = self._doa_poller
         if doa_poller is None:
             get_doa = getattr(self.robot.media, "get_DoA", None)
             if callable(get_doa):
-                doa_poller = DoAPoller(get_doa, stop_event)
-                doa_poller.start()
-                doa_poller.wait_for_initial_read()
-                self._doa_poller = doa_poller
+                # Guard: _run_connection may have already assigned _doa_poller.
+                # Only create the fallback poller when _doa_poller is still None;
+                # creating a second one leaks the first poller's thread.
+                if self._doa_poller is None:
+                    doa_poller = DoAPoller(get_doa, stop_event)
+                    doa_poller.start()
+                    doa_poller.wait_for_initial_read()
+                    self._doa_poller = doa_poller
+                else:
+                    doa_poller = self._doa_poller
         while not stop_event.is_set():
             sample = await asyncio.to_thread(self._capture.pop, 0.25)
             if sample is None:
@@ -405,9 +412,8 @@ class RealtimeRobotSession:
                 self.status.metrics.set_gauge(
                     "doa_age_ms", -1.0 if math.isinf(_doa_age) else _doa_age * 1000.0
                 )
-            connected_at = getattr(self, "_connected_at", None)
-            if connected_at is not None:
-                self.status.metrics.set_gauge("connection_uptime_seconds", now - connected_at)
+            if self._connected_at is not None:
+                self.status.metrics.set_gauge("connection_uptime_seconds", now - self._connected_at)
             if doa_poller is not None and now - last_doa_update >= 0.1:
                 doa = doa_poller.latest()
                 if doa is not None:
@@ -565,6 +571,7 @@ class RealtimeRobotSession:
                 await self._finish_camera_capture()
                 self.watchdog.arm("input_append")
                 await self.connection.input_audio_buffer.commit()
+                self.watchdog.disarm("input_append")
                 self._speech_ended_at = time.monotonic()
                 self.status.record_audio_commit()
                 self.watchdog.arm("response_create")
@@ -574,7 +581,6 @@ class RealtimeRobotSession:
                         "output_modalities": ["audio"],
                     }
                 )
-                self.watchdog.disarm("input_append")
                 self.status.record_response_request()
 
     def _restart_capture(self) -> None:
@@ -743,7 +749,7 @@ class RealtimeRobotSession:
                     self.status.metrics.increment("speaker_restart_count")
                     self._speaker.flush()
                     await asyncio.to_thread(self._restart_media_pipeline)
-                else:
+                elif accepted:
                     if self._playback_started_at is None:
                         self._playback_started_at = time.monotonic()
                     self._playback_pushed_ms += pcm_out.size * 1_000.0 / target_rate
@@ -832,6 +838,8 @@ class RealtimeRobotSession:
             elif event_type == "response.output_audio.delta":
                 response_id = str(event.response_id)
                 if response_id in self._interrupted_response_ids:
+                    # Discard audio for a cancelled response. response.done is the
+                    # backstop that clears first_output and confirms cancellation.
                     continue
                 self.watchdog.disarm("first_output")
                 pcm = np.frombuffer(base64.b64decode(event.delta), dtype=np.int16)
@@ -954,12 +962,19 @@ class RealtimeRobotSession:
 
     async def _flush_tool_outputs(self) -> None:
         pending, self._pending_tool_outputs = self._pending_tool_outputs, []
+        created = 0
         for epoch, call_id, output in pending:
             if epoch != self.connection_epoch:
                 continue
             await self.connection.conversation.item.create(
                 item={"type": "function_call_output", "call_id": call_id, "output": output}
             )
+            created += 1
+        if created == 0:
+            # All outputs were stale (wrong epoch); sending response.create with no
+            # function outputs would confuse the model. Belt-and-suspenders: caller's
+            # reset already clears pending outputs before retry makes this reachable.
+            return
         self.fsm.transition(SessionState.WAITING_RESPONSE, reason="tool_outputs_submitted")
         self._response_generation_done = False
         self.watchdog.arm("response_create")
@@ -1003,10 +1018,10 @@ class RealtimeRobotSession:
             else:
                 await self.connection.response.cancel(response_id=response_id)
             self.watchdog.arm("response_cancel")
-        if self._barge_in_at is not None:
-            self.status.metrics.observe_ms(
-                "barge_in_to_cancel_ms", (time.monotonic() - self._barge_in_at) * 1000.0
-            )
+            if self._barge_in_at is not None:
+                self.status.metrics.observe_ms(
+                    "barge_in_to_cancel_ms", (time.monotonic() - self._barge_in_at) * 1000.0
+                )
 
         await self._clear_playback()
         if self._barge_in_at is not None:

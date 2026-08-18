@@ -1,5 +1,6 @@
 import json
 
+from reachy_openai_realtime.observability.events import EventRecorder
 from reachy_openai_realtime.runtime_status import RuntimeStatus, safe_message
 
 
@@ -72,6 +73,35 @@ def test_secrets_are_redacted_from_errors_and_events() -> None:
     assert key not in str(snapshot)
     assert "sk-***" in snapshot["last_error"]
     assert key not in safe_message(f"bad {key}")
+
+
+def test_set_phase_emits_recorder_event_with_correct_connected(tmp_path) -> None:
+    # A2: connected is snapshotted under the lock before record_event fires,
+    # so the emitted value reflects the new connected state, not a stale read.
+    recorder = EventRecorder(tmp_path / "events.jsonl")
+    status = RuntimeStatus()
+    status.attach_recorder(recorder)
+    status.set_phase("listening", "ready", connected=True, detail_key="detail_listening")
+    recorder.close()
+
+    lines = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    phase_events = [e for e in lines if e["event"] == "status.phase"]
+    assert phase_events, "status.phase event was not emitted"
+    assert phase_events[0]["connected"] is True
+    assert phase_events[0]["phase"] == "listening"
+
+
+def test_record_error_emits_recorder_event(tmp_path) -> None:
+    recorder = EventRecorder(tmp_path / "events.jsonl")
+    status = RuntimeStatus()
+    status.attach_recorder(recorder)
+    status.record_error("network timeout")
+    recorder.close()
+
+    lines = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    error_events = [e for e in lines if e["event"] == "status.error"]
+    assert error_events, "status.error event was not emitted"
+    assert "network timeout" in error_events[0]["message"]
 
 
 def test_snapshot_includes_cumulative_response_usage() -> None:

@@ -226,6 +226,8 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     session._camera_delete_events = {}
     session._vad = EnergyTurnDetector()
     session.watchdog = DeadlineWatchdog()
+    session._doa_poller = None
+    session._connected_at = None
 
     session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
     session._mic_ladder = AudioRecoveryLadder()
@@ -384,6 +386,8 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session._interrupted_response_ids = RecentIds()
     session._vad = EnergyTurnDetector()
     session.watchdog = DeadlineWatchdog()
+    session._doa_poller = None
+    session._connected_at = None
 
     session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
     session._mic_ladder = AudioRecoveryLadder()

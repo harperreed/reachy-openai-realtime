@@ -53,6 +53,8 @@ def make_session(frames, stop_event) -> RealtimeRobotSession:
     session._camera_delete_events = {}
     session._vad = EnergyTurnDetector()
     session.watchdog = DeadlineWatchdog()
+    session._doa_poller = None
+    session._connected_at = None
     return session
 
 

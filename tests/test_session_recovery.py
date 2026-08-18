@@ -68,3 +68,19 @@ def test_nested_response_status_is_found() -> None:
             self.response = type("Resp", (), {"status_code": 401})()
 
     assert classify_connection_error(Handshake()) is ErrorClass.FATAL_CONFIG
+
+
+def test_session_cap_close_is_transient() -> None:
+    # The 60-min Realtime session cap sends a connection close with no HTTP
+    # status code — the SDK surfaces this as APIConnectionError (or a plain
+    # network exception). Must classify TRANSIENT so the session reconnects.
+    # Note: make_session's AsyncOpenAI() ctor depends on the env key fixture;
+    # fast_sleep sets stop before awaiting so the loop condition, not the
+    # sleep, observes the stop. Neither applies here — pure error-classification test.
+    class APIConnectionError(Exception):
+        """Mimics openai.APIConnectionError: no status_code attribute."""
+
+    exc = APIConnectionError("server closed connection after 60 min session cap")
+    # No status code must be reachable via the hierarchy
+    assert not hasattr(exc, "status_code")
+    assert classify_connection_error(exc) is ErrorClass.TRANSIENT

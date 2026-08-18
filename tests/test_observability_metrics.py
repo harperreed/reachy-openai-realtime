@@ -53,3 +53,15 @@ def test_registry_is_thread_safe() -> None:
     for thread in threads:
         thread.join()
     assert registry.snapshot()["counters"]["ticks"] == 4000
+
+
+def test_percentile_tie_case_avoids_banker_rounding() -> None:
+    # With banker's rounding, round(0.5) == 0 (rounds to even), so
+    # _percentile([10.0, 20.0], 50.0) would return 10.0 instead of 20.0.
+    # Nearest-rank must return the upper value on an exact tie.
+    stat = LatencyStat()
+    stat.record(10.0)
+    stat.record(20.0)
+    snap = stat.snapshot()
+    # With 2 values, p50 index = int((2-1)*50/100 + 0.5) = int(1.0) = 1 → 20.0
+    assert snap["p50"] == 20.0

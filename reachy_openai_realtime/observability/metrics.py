@@ -8,7 +8,8 @@ from typing import Any
 
 
 def _percentile(data: list[float], percent: float) -> float:
-    index = round((len(data) - 1) * percent / 100.0)
+    # Nearest-rank: int(...+ 0.5) avoids banker's-rounding tie bias.
+    index = int((len(data) - 1) * percent / 100.0 + 0.5)
     return data[index]
 
 
@@ -62,6 +63,8 @@ class MetricsRegistry:
             self._gauges[name] = float(value)
 
     def snapshot(self) -> dict[str, Any]:
+        # The window sort inside LatencyStat.snapshot() runs under this registry
+        # lock intentionally: consistency beats minimising lock-hold time here.
         with self._lock:
             return {
                 "latency": {name: stat.snapshot() for name, stat in self._latency.items()},
