@@ -38,6 +38,7 @@ from .config import (
 from .motion import TOOL_DEFINITIONS, MotionController
 from .runtime_status import RuntimeStatus, safe_message
 from .session.fsm import SessionState, SessionStateMachine
+from .session.recovery import BackoffPolicy, ErrorClass, SessionOutcome, classify_connection_error
 from .vad import EnergyTurnDetector
 
 logger = logging.getLogger(__name__)
@@ -172,51 +173,50 @@ class RealtimeRobotSession:
             "fsm.transition", from_state=old_state.name, to_state=new_state.name, reason=reason
         )
 
-    async def run(self, stop_event: Any) -> None:
-        last_error: Exception | None = None
-        for attempt in range(1, self.config.reconnect_attempts + 1):
-            if stop_event.is_set():
-                self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
-                self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
-                return
+    async def run(self, stop_event: Any) -> SessionOutcome:
+        backoff = BackoffPolicy()
+        while not stop_event.is_set():
+            self.connection_epoch += 1
+            self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
+            self.status.record_event("realtime.connecting", epoch=self.connection_epoch)
+            connected_at = time.monotonic()
+            error: BaseException | None = None
             try:
-                label = "Realtime APIへ接続しています"
-                if attempt > 1:
-                    label = f"Realtime APIへ再接続しています（{attempt}/{self.config.reconnect_attempts}）"
-                self.status.set_phase(
-                    "connecting",
-                    label,
-                    connected=False,
-                    event=True,
-                    detail_key=(
-                        "detail_connecting" if attempt == 1 else "detail_reconnecting"
-                    ),
-                )
-                self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
                 await self._run_connection(stop_event)
-                return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                last_error = exc
-                self.status.record_error(exc)
-                logger.exception("Realtime connection failed (%d/%d)", attempt, self.config.reconnect_attempts)
-                self.fsm.transition(SessionState.RECOVERING, reason=type(exc).__name__.lower())
-                if attempt < self.config.reconnect_attempts:
-                    self.status.set_phase(
-                        "reconnecting",
-                        f"{2 ** (attempt - 1)}秒後に再接続します",
-                        connected=False,
-                        event=True,
-                        detail_key="detail_reconnecting",
-                    )
-                    await self.reset_connection_state()
-                    await asyncio.sleep(2 ** (attempt - 1))
-        if last_error is not None:
-            raise RuntimeError("Realtime API reconnect attempts exhausted") from last_error
+                error = exc
+            if stop_event.is_set():
+                break
+            self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
+            await self.reset_connection_state()
+            if error is not None:
+                self.status.record_error(f"realtime connection failed: {error}")
+                if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
+                    self.status.set_phase("error", "設定エラーが発生しました", connected=False, detail_key="detail_error")
+                    self.status.record_event("realtime.error", fatal=True, message=str(error))
+                    self.fsm.transition(SessionState.STOPPING, reason="fatal_config_error")
+                    self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+                    return SessionOutcome.FATAL_CONFIG
+            backoff.note_session_duration(time.monotonic() - connected_at)
+            delay = backoff.next_delay()
+            self.status.record_event("realtime.reconnect", delay_seconds=round(delay, 2))
+            await self._sleep_unless_stopped(stop_event, delay)
+        self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
+        await self.reset_connection_state()
+        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+        return SessionOutcome.STOPPED
+
+    async def _sleep_unless_stopped(self, stop_event: Any, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while not stop_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.2, remaining))
 
     async def _run_connection(self, stop_event: Any) -> None:
-        self.connection_epoch += 1
         async with self.client.realtime.connect(model=self.config.model) as connection:
             self.connection = connection
             self.fsm.transition(SessionState.INITIALIZING, reason="socket_open")

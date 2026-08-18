@@ -84,7 +84,6 @@ class AppConfig:
     language: str = DEFAULT_LANGUAGE
     input_rate: int = 24_000
     output_rate: int = 24_000
-    reconnect_attempts: int = 3
 
     @classmethod
     def from_env(cls) -> AppConfig:

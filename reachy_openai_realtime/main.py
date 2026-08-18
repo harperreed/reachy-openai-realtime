@@ -17,6 +17,7 @@ from .config import AppConfig, language_choices, language_option
 from .motion import MotionController
 from .observability.events import EventRecorder
 from .realtime import RealtimeRobotSession
+from .session.recovery import SessionOutcome
 from .runtime_status import RuntimeStatus
 from .settings import (
     events_path,
@@ -319,7 +320,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     capture_camera_jpeg=self._capture_camera_frame,
                 )
                 try:
-                    asyncio.run(session.run(stop_event))
+                    outcome = asyncio.run(session.run(stop_event))
                 except Exception as exc:
                     logger.exception("Realtime session stopped with an error")
                     self.runtime_status.record_error(exc)
@@ -332,6 +333,15 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                         event=True,
                         detail_key="detail_reconnecting",
                     )
+                else:
+                    if outcome is SessionOutcome.FATAL_CONFIG:
+                        stale_fingerprint = (os.getenv("OPENAI_API_KEY", ""), config)
+                        while not stop_event.is_set():
+                            load_instance_env()
+                            current = (os.getenv("OPENAI_API_KEY", ""), AppConfig.from_env())
+                            if current != stale_fingerprint:
+                                break
+                            stop_event.wait(2.0)
         finally:
             try:
                 reachy_mini.media.stop_recording()
