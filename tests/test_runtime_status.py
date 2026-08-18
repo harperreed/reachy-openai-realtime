@@ -1,4 +1,42 @@
+import json
+
 from reachy_openai_realtime.runtime_status import RuntimeStatus, safe_message
+
+
+def test_add_event_mirrors_into_recorder(tmp_path) -> None:
+    from reachy_openai_realtime.observability.events import EventRecorder
+    from reachy_openai_realtime.runtime_status import RuntimeStatus
+
+    recorder = EventRecorder(tmp_path / "events.jsonl")
+    status = RuntimeStatus()
+    status.attach_recorder(recorder)
+    # NOTE: add_event(message, level) — level is second; brief had args swapped (typo),
+    # intent is: message with a secret, level="info".
+    status.add_event("connection ready sk-proj-abcdef1234567890", "info")
+    recorder.close()
+
+    lines = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    mirrored = [entry for entry in lines if entry["event"] == "status.message"]
+    assert mirrored
+    assert "sk-***" in mirrored[0]["message"]
+    assert "sk-proj-abcdef1234567890" not in json.dumps(lines)
+
+
+def test_snapshot_includes_metrics() -> None:
+    from reachy_openai_realtime.runtime_status import RuntimeStatus
+
+    status = RuntimeStatus()
+    status.metrics.increment("reconnect_count")
+    snapshot = status.snapshot()
+    assert snapshot["metrics"]["counters"]["reconnect_count"] == 1
+
+
+def test_status_without_recorder_still_works() -> None:
+    from reachy_openai_realtime.runtime_status import RuntimeStatus
+
+    status = RuntimeStatus()
+    status.add_event("no recorder attached")  # must not raise
+    assert status.snapshot()["metrics"]["counters"] == {}
 
 
 def test_snapshot_tracks_runtime_activity() -> None:

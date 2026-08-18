@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from importlib.metadata import PackageNotFoundError, version
+from logging.handlers import RotatingFileHandler
 
 from fastapi import HTTPException, Response
 from pydantic import BaseModel
@@ -14,10 +15,13 @@ from reachy_mini import ReachyMini, ReachyMiniApp
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
 from .motion import MotionController
+from .observability.events import EventRecorder
 from .realtime import RealtimeRobotSession
 from .runtime_status import RuntimeStatus
 from .settings import (
+    events_path,
     load_instance_env,
+    log_path,
     remove_api_key,
     save_api_key,
     save_language,
@@ -228,6 +232,14 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             return self._reachy_mini.media.get_frame_jpeg()
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
+        recorder = EventRecorder(events_path())
+        self.runtime_status.attach_recorder(recorder)
+        file_handler = RotatingFileHandler(log_path(), maxBytes=2_000_000, backupCount=2)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        logging.getLogger().addHandler(file_handler)
+        recorder.record("app.start")
+        self._recorder = recorder
+
         with self._camera_lock:
             self._reachy_mini = reachy_mini
             self._camera_available = reachy_mini.media.camera is not None
@@ -338,6 +350,9 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     event=True,
                     detail_key="detail_stopped",
                 )
+                recorder.record("app.stop")
+                recorder.close()
+                logging.getLogger().removeHandler(file_handler)
 
 
 if __name__ == "__main__":

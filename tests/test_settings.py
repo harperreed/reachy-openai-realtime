@@ -72,6 +72,14 @@ def test_language_is_validated_and_preserves_api_key(tmp_path, monkeypatch) -> N
         save_language("xx")
 
 
+def test_events_and_log_paths_live_in_config_dir(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path))
+    from reachy_openai_realtime import settings
+
+    assert settings.events_path() == tmp_path / "events.jsonl"
+    assert settings.log_path() == tmp_path / "application.log"
+
+
 def test_legacy_persistent_config_is_migrated(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", raising=False)
     monkeypatch.delenv("REACHY_JAPANESE_REALTIME_CONFIG_DIR", raising=False)

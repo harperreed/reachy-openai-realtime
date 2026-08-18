@@ -41,6 +41,14 @@ def usage_path() -> Path:
     return config_dir() / "usage.json"
 
 
+def events_path() -> Path:
+    return config_dir() / "events.jsonl"
+
+
+def log_path() -> Path:
+    return config_dir() / "application.log"
+
+
 def _prepare_config_dir() -> Path:
     target_dir = config_dir()
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)

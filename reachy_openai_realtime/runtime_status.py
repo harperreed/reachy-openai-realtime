@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import re
 import threading
 from collections import Counter, deque
 from datetime import datetime, timezone
 from typing import Any
 
+from .observability.events import EventRecorder, redact_secrets
+from .observability.metrics import MetricsRegistry
 from .usage import UsageTracker
-
-_SECRET_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
 
 
 def _now() -> str:
@@ -16,7 +15,7 @@ def _now() -> str:
 
 
 def safe_message(value: object, limit: int = 400) -> str:
-    text = _SECRET_PATTERN.sub("sk-***", str(value)).replace("\n", " ").strip()
+    text = redact_secrets(str(value)).replace("\n", " ").strip()
     return text[:limit]
 
 
@@ -24,6 +23,8 @@ class RuntimeStatus:
     def __init__(self, usage_tracker: UsageTracker | None = None) -> None:
         self._lock = threading.Lock()
         self._usage_tracker = usage_tracker or UsageTracker()
+        self.metrics = MetricsRegistry()
+        self._recorder: EventRecorder | None = None
         self._phase = "starting"
         self._detail = "アプリを起動しています"
         self._detail_key = "detail_starting"
@@ -60,6 +61,14 @@ class RuntimeStatus:
             key="event_app_started",
         )
 
+    def attach_recorder(self, recorder: EventRecorder) -> None:
+        self._recorder = recorder
+
+    def record_event(self, event: str, **fields: object) -> None:
+        """Forward a structured event to the flight recorder, if one is attached."""
+        if self._recorder is not None:
+            self._recorder.record(event, **fields)
+
     def set_phase(
         self,
         phase: str,
@@ -86,6 +95,7 @@ class RuntimeStatus:
                     key=detail_key,
                     params=detail_params,
                 )
+        self.record_event("status.phase", phase=phase, connected=self._connected)
 
     def record_error(self, error: object) -> None:
         message = safe_message(error)
@@ -98,6 +108,7 @@ class RuntimeStatus:
             self._last_error = message or type(error).__name__
             self._updated_at = _now()
             self._append_event_locked("error", self._last_error)
+        self.record_event("status.error", message=message)
 
     def clear_error(self) -> None:
         with self._lock:
@@ -313,14 +324,16 @@ class RuntimeStatus:
         key: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> None:
+        safe = safe_message(message)
         with self._lock:
             self._append_event_locked(
                 level,
-                safe_message(message),
+                safe,
                 key=key,
                 params=params,
             )
             self._updated_at = _now()
+        self.record_event("status.message", level=level, message=safe, key=key)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -357,6 +370,7 @@ class RuntimeStatus:
                 "events": list(reversed(self._events)),
             }
         snapshot["usage"] = self._usage_tracker.snapshot()
+        snapshot["metrics"] = self.metrics.snapshot()
         return snapshot
 
     def _append_event_locked(
