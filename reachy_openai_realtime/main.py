@@ -16,7 +16,7 @@ from .audio.capture import AudioPipelineStalled
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
 from .motion import MotionController
-from .observability.events import EventRecorder
+from .observability.events import EventRecorder, RedactingFormatter
 from .realtime import RealtimeRobotSession
 from .runtime_status import RuntimeStatus
 from .session.recovery import SessionOutcome
@@ -48,7 +48,7 @@ def attach_file_logging() -> RotatingFileHandler:
     """
     prepare_config_dir()
     handler = RotatingFileHandler(log_path(), maxBytes=2_000_000, backupCount=2)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logging.getLogger().addHandler(handler)
     return handler
 

@@ -21,6 +21,14 @@ def redact_secrets(text: str) -> str:
     return _SECRET_PATTERN.sub("sk-***", text)
 
 
+class RedactingFormatter(logging.Formatter):
+    """Formatter that redacts OpenAI-style keys from the fully rendered record —
+    message, args, and exception traceback text (spec: no secrets on disk)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_secrets(super().format(record))
+
+
 def _redact_default(obj: object) -> str:
     return redact_secrets(str(obj))
 
