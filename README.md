@@ -138,7 +138,7 @@ An expectation-based watchdog (`reachy_openai_realtime/session/watchdog.py`) arm
 
 The capture worker (`reachy_openai_realtime/audio/capture.py`) drains `media.get_audio_sample()` continuously regardless of session state. If the mic stalls for 1.75 s, the `AudioRecoveryLadder` escalates in steps (3 s cooldown between each):
 
-1. `restart_capture` — restart the capture thread
+1. `restart_capture` — cycle GStreamer recording state (`stop_recording`/`start_recording`; the capture thread keeps running)
 2. `restart_media` — restart the GStreamer media pipeline
 3. `restart_session` — rebuild the app session via the outer run loop
 
@@ -157,7 +157,7 @@ Runtime logs live in:
 ~/.config/reachy-mini/apps/reachy_openai_realtime/application.log
 ```
 
-Both files rotate at 2–5 MB and keep two generations. Neither file ever contains an API key or raw microphone audio — all values are redacted before writing.
+Both files rotate at 2–5 MB and keep two generations. Both files pass through a redaction filter that masks OpenAI-style keys (`sk-…`) before writing — structured event fields in `events.jsonl` and the fully rendered log line (including tracebacks) in `application.log`. Raw microphone audio is never written to either file.
 
 Live metrics (connection uptime, latency percentiles, queue depths, reconnect counts) are available at `/api/status` and the full diagnostics breakdown at `/api/diagnostics`.
 
