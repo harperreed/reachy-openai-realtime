@@ -10,7 +10,7 @@ from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
-from test_audio_playback import FakeSpeakerMedia
+from conftest import FakeSpeakerMedia
 from test_realtime_manual_turn import BargeInMedia, BargeInMotion, FakeConnection, FakeStopEvent
 
 

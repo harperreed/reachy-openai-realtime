@@ -5,7 +5,7 @@ import time
 
 import numpy as np
 
-from conftest import drive_fsm
+from conftest import FakeSpeakerMedia, drive_fsm
 
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
 from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
@@ -13,11 +13,6 @@ from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.vad import EnergyTurnDetector
-
-
-class FakeSpeakerMedia:
-    def push_audio_sample(self, data: np.ndarray) -> None:
-        pass
 
 
 def dirty_chunk() -> PlaybackChunk:

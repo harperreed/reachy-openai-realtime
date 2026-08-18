@@ -4,6 +4,8 @@ import time
 
 import numpy as np
 
+from conftest import FakeSpeakerMedia
+
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
 
 
@@ -65,14 +67,6 @@ def test_clear_returns_dropped_ms() -> None:
     buffer.push(chunk(150.0))
     assert buffer.clear() == 300.0
     assert buffer.queued_ms() == 0.0
-
-
-class FakeSpeakerMedia:
-    def __init__(self) -> None:
-        self.pushed: list[np.ndarray] = []
-
-    def push_audio_sample(self, data: np.ndarray) -> None:
-        self.pushed.append(data)
 
 
 def test_speaker_worker_writes_in_order_and_reports_writes() -> None:

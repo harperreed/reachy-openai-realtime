@@ -100,6 +100,18 @@ class FakeMedia:
     def get_DoA(self) -> None:
         return None
 
+    def stop_recording(self) -> None:
+        pass
+
+    def start_recording(self) -> None:
+        pass
+
+    def stop_playing(self) -> None:
+        pass
+
+    def start_playing(self) -> None:
+        pass
+
 
 class FakeMotion:
     def __init__(self) -> None:
