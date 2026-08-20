@@ -268,12 +268,11 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def set_pinned(self, note_id: str, pinned: bool) -> bool:
-        with self._lock:
-            with self._db() as db:
-                cursor = db.execute(
-                    "UPDATE notes SET pinned = ? WHERE id = ? AND deleted_at IS NULL",
-                    (1 if pinned else 0, note_id),
-                )
+        with self._lock, self._db() as db:
+            cursor = db.execute(
+                "UPDATE notes SET pinned = ? WHERE id = ? AND deleted_at IS NULL",
+                (1 if pinned else 0, note_id),
+            )
             return cursor.rowcount > 0
 
     def pinned_notes(self) -> list[Note]:
