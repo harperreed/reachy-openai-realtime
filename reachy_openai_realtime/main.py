@@ -16,7 +16,7 @@ from reachy_mini import ReachyMini, ReachyMiniApp
 from .audio.capture import AudioPipelineStalled
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
-from .motion import MotionManager
+from .motion import DANCES_DATASET, EMOTIONS_DATASET, MotionManager, RecordedMoveCatalog
 from .observability.events import EventRecorder, RedactingFormatter
 from .realtime import RealtimeRobotSession
 from .runtime_status import RuntimeStatus
@@ -310,7 +310,11 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             )
             return
 
-        motion = MotionManager(reachy_mini)
+        emotions_catalog = RecordedMoveCatalog(EMOTIONS_DATASET)
+        dances_catalog = RecordedMoveCatalog(DANCES_DATASET)
+        emotions_catalog.load_async()
+        dances_catalog.load_async()
+        motion = MotionManager(reachy_mini, emotions=emotions_catalog, dances=dances_catalog)
 
         self._session_started = True
         self.runtime_status.set_phase(
@@ -341,6 +345,14 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 "現在のマイク設定で開始します",
                 key="event_mic_config_current",
             )
+        for catalog in (emotions_catalog, dances_catalog):
+            if not catalog.wait_ready(timeout=5.0):
+                self.runtime_status.add_event(
+                    f"収録モーションのカタログを読み込めていません: {catalog.dataset}",
+                    "warning",
+                    key="event_motion_catalog_unavailable",
+                    params={"dataset": catalog.dataset},
+                )
         warmup_remaining = 1.0 - (time.monotonic() - audio_started_at)
         if warmup_remaining > 0:
             time.sleep(warmup_remaining)

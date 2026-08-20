@@ -27,6 +27,7 @@ from .config import (
     AppConfig,
     greeting_instructions,
     language_option,
+    recorded_moves_instructions,
     response_instructions,
     session_instructions,
 )
@@ -37,7 +38,7 @@ from .dsp import (
     resample_linear,
     select_mono_float32,
 )
-from .motion import TOOL_DEFINITIONS, MotionManager
+from .motion import MotionManager
 from .runtime_status import RuntimeStatus, safe_message
 from .session.fsm import SessionState, SessionStateMachine
 from .session.recovery import BackoffPolicy, ErrorClass, SessionOutcome, classify_connection_error
@@ -327,7 +328,8 @@ class RealtimeRobotSession:
         pcm24: Any = {"type": "audio/pcm", "rate": 24_000}
         return RealtimeSessionCreateRequestParam(
             type="realtime",
-            instructions=session_instructions(self._current_language()),
+            instructions=session_instructions(self._current_language())
+            + recorded_moves_instructions(self.motion.emotion_names(), self.motion.dance_names()),
             audio=RealtimeAudioConfigParam(
                 input=RealtimeAudioConfigInputParam(
                     format=pcm24,
@@ -339,7 +341,7 @@ class RealtimeRobotSession:
                     voice=self.config.voice,
                 ),
             ),
-            tools=TOOL_DEFINITIONS,  # type: ignore[arg-type]
+            tools=self.motion.tool_definitions(),  # type: ignore[arg-type]
             tool_choice="auto",
             output_modalities=["audio"],
             parallel_tool_calls=False,
@@ -829,7 +831,7 @@ class RealtimeRobotSession:
                     self.status.record_response_request()
             elif event_type == "input_audio_buffer.speech_started":
                 await self._clear_playback()
-                self.motion.stop_current()
+                self.motion.stop_current(reason="barge_in")
                 self.status.set_phase(
                     "user_speaking",
                     "音声を聞いています",
@@ -1072,7 +1074,7 @@ class RealtimeRobotSession:
         if response_id is not None:
             self._interrupted_response_ids.add(response_id)
         self._pending_tool_outputs.clear()
-        self.motion.stop_current()
+        self.motion.stop_current(reason="barge_in")
 
         if generation_active:
             if response_id is None:

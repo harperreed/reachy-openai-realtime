@@ -151,7 +151,7 @@ class BargeInMotion:
     def __init__(self) -> None:
         self.stopped = 0
 
-    def stop_current(self) -> None:
+    def stop_current(self, *, reason: str = "stop") -> None:
         self.stopped += 1
 
     def set_idle_enabled(self, enabled: bool) -> None:
