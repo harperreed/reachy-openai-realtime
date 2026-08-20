@@ -14,7 +14,9 @@ def make_store(tmp_path, **kwargs):
 
 
 def test_open_creates_schema_and_migration_row(tmp_path):
-    store = make_store(tmp_path)
+    db_path = tmp_path / "memory.sqlite"
+    store = MemoryStore(db_path)
+    store.open()
     try:
         note = store.insert_note("Harper likes espresso", "preference", "agent")
         assert note.id.startswith("mem_")
@@ -22,6 +24,14 @@ def test_open_creates_schema_and_migration_row(tmp_path):
         assert note.pinned is False
     finally:
         store.close()
+    # Verify the migration row was written atomically alongside the DDL (regression for
+    # the executescript-then-INSERT split that left tables present but no version row).
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT version FROM schema_migrations").fetchone()
+        assert row is not None and row[0] == 1
+    finally:
+        conn.close()
 
 
 def test_note_survives_reopen(tmp_path):

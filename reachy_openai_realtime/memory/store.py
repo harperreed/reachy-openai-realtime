@@ -154,12 +154,18 @@ class MemoryStore:
         for version in sorted(MIGRATIONS):
             if version in applied:
                 continue
-            with connection:
-                connection.executescript(MIGRATIONS[version])
-                connection.execute(
-                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                    (version, self._now()),
-                )
+            # Wrap DDL + version-row INSERT in a single script so both land atomically.
+            # A crash between executescript (which auto-commits DDL) and the INSERT would
+            # leave tables present but no version row, causing the next open to fail.
+            # Both values are internal (int from our dict, ISO string we generated) — no injection surface.
+            timestamp = self._now()
+            atomic_script = (
+                f"BEGIN;\n"
+                f"{MIGRATIONS[version]}\n"
+                f"INSERT INTO schema_migrations (version, applied_at) VALUES ({version}, '{timestamp}');\n"
+                f"COMMIT;\n"
+            )
+            connection.executescript(atomic_script)
 
     def _db(self) -> sqlite3.Connection:
         if self._connection is None:
@@ -191,12 +197,14 @@ class MemoryStore:
     def find_live_note_by_normalized(self, normalized: str) -> Note | None:
         with self._lock:
             rows = self._db().execute("SELECT * FROM notes WHERE deleted_at IS NULL").fetchall()
-        for row in rows:
-            if normalize_text(row["text"]) == normalized:
-                return _note_from_row(row)
-        return None
+            for row in rows:
+                if normalize_text(row["text"]) == normalized:
+                    return _note_from_row(row)
+            return None
 
     def touch_notes(self, note_ids: list[str]) -> None:
+        # All IDs in the batch share a single timestamp so last_used_at is consistent
+        # within the call — no skew between the first and last note in a retrieval set.
         if not note_ids:
             return
         with self._lock:
