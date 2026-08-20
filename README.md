@@ -23,7 +23,7 @@ It connects the robot directly to OpenAI `gpt-realtime-2.1` for speech-to-speech
 ## Features
 
 - Speech-to-speech conversations in nine selectable languages
-- English by default, with the entire UI and runtime log following the selected language
+- English by default, with static UI text and keyed status/activity entries following the selected language
 - Local far-field voice activity detection tuned for the Wireless ReSpeaker
 - Barge-in: speaking while Reachy responds cancels queued audio and truncates conversation audio correctly
 - Safe semantic motion tools: `look`, `nod`, `shake_head`, `express`, and `stop_motion`; ambient motions preserve the selected look direction
@@ -47,7 +47,10 @@ English is the default. The management UI can switch the next response to:
 - Italiano
 - Português
 
-The language selection is persisted on the robot. It changes the full management UI immediately—including status details and activity logs—and changes the spoken conversation from the next response. The app supplies the selected language through Realtime session and response instructions, following OpenAI's documented session configuration flow.
+The language selection is persisted on the robot. Static UI text and translated status/activity entries
+change immediately; raw diagnostic values may remain in their source language. The spoken conversation
+changes from the next response. The app supplies the selected language through Realtime session and
+response instructions, following OpenAI's documented session configuration flow.
 
 ## Install on Reachy Mini Wireless
 
@@ -66,15 +69,28 @@ After installation, open the app from the Reachy Mini dashboard and enter an `OP
 
 `marin` is one of the voices OpenAI recommends for best Realtime audio quality.
 
+The persistent configuration directory resolves in this order: `REACHY_OPENAI_REALTIME_CONFIG_DIR`, then
+`REACHY_JAPANESE_REALTIME_CONFIG_DIR`, then
+`$XDG_CONFIG_HOME/reachy-mini/apps/reachy_openai_realtime`, then
+`~/.config/reachy-mini/apps/reachy_openai_realtime` when `XDG_CONFIG_HOME` is unset. In the paths below,
+`$CONFIG_DIR` means this resolved directory.
+
+The app stores saved settings in `$CONFIG_DIR/.env`, token counters in `$CONFIG_DIR/usage.json`, structured
+runtime events in `$CONFIG_DIR/events.jsonl`, and application logs in `$CONFIG_DIR/application.log`.
+
 ## API key security
 
-The settings UI stores the key in:
+When neither configuration-directory override is set and `XDG_CONFIG_HOME` is unset, the settings UI stores
+the key in:
 
 ```text
 ~/.config/reachy-mini/apps/reachy_openai_realtime/.env
 ```
 
-The directory is mode `0700`, the file is mode `0600`, and no settings or diagnostics API returns the saved value. Existing installations are migrated from the former `reachy_japanese_realtime` configuration directory without placing the key in the package.
+The settings UI creates or updates the directory with mode `0700` and the file with mode `0600`; settings
+and diagnostics APIs never return the saved value. For temporary development, the app can instead read
+`OPENAI_API_KEY` from the process environment. Existing legacy `.env` files may be loaded or migrated from
+the former `reachy_japanese_realtime` app.
 
 Never put an API key in source code, commits, issues, screenshots, or a Hugging Face Space. Before publishing, run:
 
@@ -110,7 +126,13 @@ The app self-heals from network drops, API timeouts, and audio stalls without ma
 
 Every connection runs through an explicit FSM (`reachy_openai_realtime/session/fsm.py`). States:
 
-`DISCONNECTED` → `CONNECTING` → `INITIALIZING` → `LISTENING` ↔ `USER_SPEAKING` → `WAITING_RESPONSE` → `ASSISTANT_SPEAKING` ↔ `INTERRUPTING`; `TOOL_EXECUTION` and `RECOVERING` are reachable from any active state; `STOPPING` → `DISCONNECTED` ends the session cleanly.
+The common conversation path is `DISCONNECTED` → `CONNECTING` → `INITIALIZING` → `LISTENING` →
+`USER_SPEAKING` → `WAITING_RESPONSE` → `ASSISTANT_SPEAKING` → `LISTENING`. Barge-in moves from
+`ASSISTANT_SPEAKING` through `INTERRUPTING` to `USER_SPEAKING` or `LISTENING`.
+
+`TOOL_EXECUTION` branches from `WAITING_RESPONSE` or `ASSISTANT_SPEAKING`, then returns to
+`WAITING_RESPONSE` or `LISTENING`. `RECOVERING` can be entered from every state except `STOPPING`.
+`STOPPING` can be entered from every state except itself and ends at `DISCONNECTED`.
 
 Every state transition is written to `events.jsonl` as an `fsm.transition` entry.
 
@@ -153,11 +175,15 @@ The playback buffer (`reachy_openai_realtime/audio/playback.py`) targets 200 ms 
 Runtime logs live in:
 
 ```text
-~/.config/reachy-mini/apps/reachy_openai_realtime/events.jsonl
-~/.config/reachy-mini/apps/reachy_openai_realtime/application.log
+$CONFIG_DIR/events.jsonl
+$CONFIG_DIR/application.log
 ```
 
-Both files rotate at 2–5 MB and keep two generations. Both files pass through a redaction filter that masks OpenAI-style keys (`sk-…`) before writing — structured event fields in `events.jsonl` and the fully rendered log line (including tracebacks) in `application.log`. Raw microphone audio is never written to either file.
+Both files rotate at 2–5 MB and keep two generations. New entries redact OpenAI-style API keys (`sk-…`):
+structured event fields in `events.jsonl` and fully rendered lines, including tracebacks, in
+`application.log`. Existing and rotated logs from older app versions may predate this safeguard. The app
+does not write raw microphone audio. Logs can contain diagnostic errors and assistant transcripts, so
+review them before sharing.
 
 Live metrics (connection uptime, latency percentiles, queue depths, reconnect counts) are available at `/api/status` and the full diagnostics breakdown at `/api/diagnostics`.
 

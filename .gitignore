@@ -6,6 +6,10 @@ build/
 !.env.example
 *.pem
 *.key
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
 secrets.*
 .venv/
 .pytest_cache/

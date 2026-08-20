@@ -50,7 +50,9 @@ def attach_file_logging() -> RotatingFileHandler:
     """
     prepare_config_dir()
     handler = RotatingFileHandler(log_path(), maxBytes=2_000_000, backupCount=2)
-    handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handler.setFormatter(
+        RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
     logging.getLogger().addHandler(handler)
     return handler
 

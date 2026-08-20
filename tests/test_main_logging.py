@@ -29,23 +29,40 @@ def test_attach_file_logging_creates_config_dir_on_fresh_install(monkeypatch, tm
         handler.close()
 
 
-def test_application_log_redacts_keys_including_exception_text(tmp_path, monkeypatch) -> None:
-    """OpenAI-style keys must not reach disk — neither via %s-formatted messages
-    nor via exception tracebacks (which a logging.Filter cannot see)."""
-    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path))
-    secret = "sk-test-abcdefghijklmnopqrstuvwxyz"
-    handler = attach_file_logging()
-    logger = logging.getLogger("redaction-test")
-    try:
-        logger.warning("connecting with %s", secret)
-        try:
-            raise RuntimeError(f"auth failed for {secret}")
-        except RuntimeError:
-            logger.exception("boom")
-    finally:
-        handler.close()
-        logging.getLogger().removeHandler(handler)
+def test_attach_file_logging_redacts_message_keys(monkeypatch, tmp_path) -> None:
+    fresh = tmp_path / "apps" / "reachy_openai_realtime"
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(fresh))
+    message_key = "sk-test-message-abcdefghijklmnop"
 
-    written = log_path().read_text(encoding="utf-8")
-    assert secret not in written                      # neither the %s-formatted message...
-    assert redact_secrets(secret) in written          # ...nor the traceback text leaks
+    handler = attach_file_logging()
+    logger = logging.getLogger("application-log-redaction-test")
+    try:
+        logger.error("message key: %s", message_key)
+        handler.flush()
+        contents = log_path().read_text(encoding="utf-8")
+        assert message_key not in contents
+        assert redact_secrets(message_key) in contents
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+
+
+def test_attach_file_logging_redacts_exception_keys(monkeypatch, tmp_path) -> None:
+    fresh = tmp_path / "apps" / "reachy_openai_realtime"
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(fresh))
+    exception_key = "sk-test-exception-abcdefghijklmnop"
+
+    handler = attach_file_logging()
+    logger = logging.getLogger("application-log-redaction-test")
+    try:
+        try:
+            raise RuntimeError(f"exception key: {exception_key}")
+        except RuntimeError:
+            logger.exception("request failed")
+        handler.flush()
+        contents = log_path().read_text(encoding="utf-8")
+        assert exception_key not in contents
+        assert redact_secrets(exception_key) in contents
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
