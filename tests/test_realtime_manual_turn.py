@@ -151,7 +151,7 @@ class BargeInMotion:
     def __init__(self) -> None:
         self.stopped = 0
 
-    def stop_current(self) -> None:
+    def stop_current(self, *, reason: str = "stop") -> None:
         self.stopped += 1
 
     def set_idle_enabled(self, enabled: bool) -> None:
@@ -162,6 +162,15 @@ class BargeInMotion:
 
     def set_speaking_enabled(self, enabled: bool) -> None:
         pass
+
+    def emotion_names(self) -> list:
+        return []
+
+    def dance_names(self) -> list:
+        return []
+
+    def tool_definitions(self) -> list:
+        return []
 
 
 class BargeInFramesMedia(BargeInMedia):

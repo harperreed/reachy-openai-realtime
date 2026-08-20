@@ -60,6 +60,17 @@ Use robot motion only when it supports the conversation:
 """.strip()
 
 
+def recorded_moves_instructions(emotions: list[str], dances: list[str]) -> str:
+    if not emotions and not dances:
+        return ""
+    lines: list[str] = []
+    if emotions:
+        lines.append("- play_emotion accepts exactly these names: " + ", ".join(emotions))
+    if dances:
+        lines.append("- play_dance accepts exactly these names: " + ", ".join(dances))
+    return "\n\n" + "\n".join(lines)
+
+
 def response_instructions(language_code: str) -> str:
     language = language_option(language_code)
     return (

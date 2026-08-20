@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from reachy_openai_realtime.main import ReachyOpenaiRealtime
+from reachy_openai_realtime.runtime_status import RuntimeStatus
 
 
 def test_health_route_reports_spec_shape(tmp_path, monkeypatch) -> None:
@@ -20,3 +21,9 @@ def test_health_route_reports_spec_shape(tmp_path, monkeypatch) -> None:
     app.status.set_component_health("microphone", True)
     app.status.set_component_health("speaker", True)
     assert client.get("/api/health").json()["ok"] is True
+
+
+def test_motion_health_goes_stale_without_beats() -> None:
+    status = RuntimeStatus()
+    status.set_component_health("motion", True, now=100.0)
+    assert status.health(now=111.0)["motion"] is False

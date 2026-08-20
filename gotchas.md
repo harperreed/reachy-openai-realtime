@@ -3,7 +3,7 @@
 - **Reachy Mini Wireless shares ONE GStreamer pipeline for mic and speaker.**
   `media.stop_playing()` and `ReachyMini.cancel_move()` stall the microphone. After
   `audio.clear_player()`, always re-assert `media.start_recording()` (see `_clear_playback` in
-  `reachy_openai_realtime/realtime.py` and `stop_current` in `motion.py`).
+  `reachy_openai_realtime/realtime.py` and `stop_current` in `motion/manager.py`).
 - **`media.get_audio_sample()` must be drained continuously** — it returns everything buffered
   since the last call, and the SDK-side buffer grows without bound otherwise (reachy_mini
   issue #436). Never gate the drain on conversation state; gate downstream consumption.
@@ -49,3 +49,8 @@
   Diagnose with `curl localhost:8000/api/apps/current-app-status` on the robot; `state:
   "stopping"` with no app process = the wedge. `uvx` lives at `/opt/uv` on Reachy OS if you
   need py-spy.
+- **Recorded moves are played by our own MotionManager loop, never `ReachyMini.play_move`.**
+  `play_move`'s cancel path is `cancel_move()` → `media.stop_playing()`, which stalls the shared
+  Wireless mic pipeline. Sidecar emotion sounds are skipped for the same reason (the speaker
+  belongs to the Realtime audio path). Catalog names are sanitized (`^[A-Za-z0-9 _-]{1,64}$`)
+  before they enter session instructions — dataset filenames are third-party input.

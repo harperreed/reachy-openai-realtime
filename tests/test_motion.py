@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -9,7 +11,8 @@ from reachy_mini.utils import create_head_pose
 from reachy_openai_realtime.motion import (
     IdleBreathingMotion,
     ListeningNodMotion,
-    MotionController,
+    MotionManager,
+    MotionPriority,
     SpeakingMotion,
 )
 
@@ -36,23 +39,23 @@ class FakeRobot:
 
 
 def test_count_is_clamped() -> None:
-    command = MotionController.validate("nod", {"count": 99})
+    command = MotionManager.validate("nod", {"count": 99})
     assert command.arguments == {"count": 3}
 
 
 def test_invalid_direction_is_rejected() -> None:
     with pytest.raises(ValueError, match="direction"):
-        MotionController.validate("look", {"direction": "behind"})
+        MotionManager.validate("look", {"direction": "behind"})
 
 
 def test_raw_angles_are_not_accepted() -> None:
     with pytest.raises(ValueError, match="unknown"):
-        MotionController.validate("set_motor_angles", {"angles": [999]})
+        MotionManager.validate("set_motor_angles", {"angles": [999]})
 
 
 def test_stop_motion_preserves_wireless_media_pipeline() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
     result = controller.submit("stop_motion", {})
     assert result["ok"] is True
     assert robot.cancelled is False
@@ -103,7 +106,7 @@ def test_idle_breathing_preserves_persistent_look_direction() -> None:
 
 def test_idle_breathing_stops_when_disabled() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
     controller._idle_start_delay = 0.0
     controller.set_idle_enabled(True)
 
@@ -155,7 +158,7 @@ def test_listening_nod_returns_to_persistent_look_direction() -> None:
 
 def test_listening_nod_runs_only_while_enabled() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
 
     controller.set_listening_enabled(True)
     controller._update_ambient_motion()
@@ -169,7 +172,7 @@ def test_listening_nod_runs_only_while_enabled() -> None:
 
 def test_listening_nod_does_not_send_motor_commands_during_quiet_window() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
     controller.set_listening_enabled(True)
     controller._listening_motion = ListeningNodMotion(
         robot.get_current_head_pose(),
@@ -228,9 +231,9 @@ def test_speaking_motion_is_composed_on_persistent_look_direction() -> None:
 
 def test_look_direction_becomes_base_for_following_motions() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
 
-    controller._execute(MotionController.validate("look", {"direction": "right"}))
+    controller._execute(MotionManager.validate("look", {"direction": "right"}))
     expected = create_head_pose(yaw=-22, degrees=True)
     np.testing.assert_allclose(controller._get_base_head(), expected)
 
@@ -248,7 +251,7 @@ def test_look_direction_becomes_base_for_following_motions() -> None:
 
 def test_speaking_motion_runs_only_while_enabled() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
 
     controller.set_speaking_enabled(True)
     controller._update_ambient_motion()
@@ -258,3 +261,147 @@ def test_speaking_motion_runs_only_while_enabled() -> None:
     controller.set_speaking_enabled(False)
     controller._update_ambient_motion()
     assert len(robot.targets) == targets_while_speaking + 1
+
+
+class RecordingRecorder:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def __call__(self, event: str, **fields) -> None:
+        self.events.append((event, fields))
+
+
+def wait_until(predicate, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_lower_priority_submission_is_rejected_while_higher_runs() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_gesture() -> None:
+        started.set()
+        release.wait(timeout=2.0)
+
+    accepted = manager._start_activity("nod", MotionPriority.GESTURE, slow_gesture)
+    assert accepted == {"ok": True, "motion": "nod"}
+    manager.start()
+    assert started.wait(timeout=2.0)
+
+    rejected = manager.submit("look", {"direction": "left"})
+    assert rejected["ok"] is False
+    assert "busy" in rejected["error"] and "priority 75" in rejected["error"]
+    release.set()
+    manager.close()
+
+
+def test_equal_or_higher_priority_preempts_running_activity() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    recorder = RecordingRecorder()
+    manager.attach_recorder(recorder)
+    first_started = threading.Event()
+    first_cancelled = threading.Event()
+
+    def first() -> None:
+        first_started.set()
+        # cooperative activity: exits promptly once preempted
+        while not manager._cancel_event.is_set():
+            time.sleep(0.005)
+        first_cancelled.set()
+
+    manager._start_activity("shake_head", MotionPriority.GESTURE, first)
+    manager.start()
+    assert first_started.wait(timeout=2.0)
+
+    result = manager.submit("nod", {"count": 1})
+    assert result["ok"] is True
+    assert first_cancelled.wait(timeout=2.0)
+    assert wait_until(lambda: ("motion.cancelled", {"motion": "shake_head", "reason": "preempted"}) in recorder.events)
+    assert wait_until(lambda: any(e == "motion.completed" and f.get("motion") == "nod" for e, f in recorder.events))
+    manager.close()
+
+
+def test_stop_motion_cancels_and_always_wins() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    recorder = RecordingRecorder()
+    manager.attach_recorder(recorder)
+    started = threading.Event()
+
+    def running() -> None:
+        started.set()
+        while not manager._cancel_event.is_set():
+            time.sleep(0.005)
+
+    manager._start_activity("nod", MotionPriority.GESTURE, running)
+    manager.start()
+    assert started.wait(timeout=2.0)
+    result = manager.submit("stop_motion", {})
+    assert result == {"ok": True, "motion": "stop_motion"}
+    assert wait_until(lambda: ("motion.cancelled", {"motion": "nod", "reason": "stop"}) in recorder.events)
+    manager.close()
+
+
+def test_background_enables_survive_a_foreground_activity() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    manager.set_idle_enabled(True)
+    result = manager.submit("nod", {"count": 1})
+    assert result["ok"] is True
+    # §12: recorded/explicit moves suppress background motion but do not clear it
+    assert manager._idle_enabled.is_set()
+    manager.close()
+
+
+def test_motion_events_emitted_for_gesture_lifecycle() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    recorder = RecordingRecorder()
+    manager.attach_recorder(recorder)
+    manager.start()
+    manager.submit("nod", {"count": 1})
+    assert wait_until(lambda: any(e == "motion.completed" and f.get("motion") == "nod" for e, f in recorder.events))
+    names = [e for e, _ in recorder.events]
+    assert names.index("motion.started") < names.index("motion.completed")
+    manager.close()
+
+
+def test_recorder_absence_does_not_break_motion() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)  # no recorder attached
+    manager.start()
+    assert manager.submit("nod", {"count": 1})["ok"] is True
+    assert wait_until(lambda: len(robot.targets) > 0)
+    manager.close()
+
+
+def test_worker_loop_beats_heartbeat() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    beats: list[float] = []
+    manager.set_heartbeat(lambda: beats.append(time.monotonic()))
+    manager.start()
+    assert wait_until(lambda: len(beats) >= 3)
+    manager.close()
+
+
+def test_heartbeat_exception_does_not_kill_worker() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+
+    def broken() -> None:
+        raise RuntimeError("health sink down")
+
+    manager.set_heartbeat(broken)
+    manager.start()
+    assert manager.submit("nod", {"count": 1})["ok"] is True
+    assert wait_until(lambda: len(robot.targets) > 0)
+    manager.close()

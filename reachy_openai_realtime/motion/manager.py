@@ -1,17 +1,25 @@
+# ABOUTME: Motion arbitration manager — validates, schedules, and executes robot
+# ABOUTME: motion commands with priority preemption and ambient generators in a worker thread.
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any, Literal, Protocol
 
 import numpy as np
 from reachy_mini.utils import create_head_pose
-from reachy_mini.utils.interpolation import linear_pose_interpolation
+
+from . import tools
+from .builtin import IdleBreathingMotion, ListeningNodMotion, SpeakingMotion
+from .recorded_moves import RecordedMoveCatalog
 
 logger = logging.getLogger(__name__)
+
+RECORDED_MOVE_TICK_HZ = 50.0  # own playback loop; bounded WS rate, above the 30 Hz ambient tick
 
 Direction = Literal["front", "left", "right", "up", "down"]
 Emotion = Literal["neutral", "happy", "curious", "surprised", "sad"]
@@ -44,217 +52,46 @@ class MotionCommand:
     arguments: dict[str, Any]
 
 
-class IdleBreathingMotion:
-    """Continuous idle pose matching Pollen's conversation-app breathing move."""
+class MotionPriority(IntEnum):
+    """Spec §12 arbitration table. Higher preempts lower; 50 is reserved for look_at_speaker (Phase 3)."""
 
+    STOP = 100
+    BARGE_IN = 90
+    GESTURE = 75
+    EMOTION = 70
+    DANCE = 65
+    LOOK = 45
+    SPEAKING = 20
+    LISTENING = 15
+    IDLE = 10
+
+
+@dataclass
+class _Activity:
+    name: str
+    priority: int
+    run: Callable[[], None]
+    kind: str = "motion"  # "motion" | "emotion" | "dance" — selects the §18 event family
+
+
+class MotionManager:
     def __init__(
         self,
-        start_head: Any,
-        start_antennas: list[float],
+        robot: ReachyMotionAPI,
         *,
-        base_head: Any | None = None,
-        interpolation_duration: float = 1.0,
+        emotions: RecordedMoveCatalog | None = None,
+        dances: RecordedMoveCatalog | None = None,
     ) -> None:
-        self.start_head = np.asarray(start_head, dtype=np.float64)
-        self.start_antennas = np.asarray(start_antennas, dtype=np.float64)
-        self.interpolation_duration = interpolation_duration
-        self.base_head = np.asarray(
-            base_head
-            if base_head is not None
-            else create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
-            dtype=np.float64,
-        )
-        self.neutral_antennas = np.array([-0.1745, 0.1745], dtype=np.float64)
-
-    def evaluate(self, elapsed: float) -> tuple[Any, np.ndarray, None]:
-        if elapsed < self.interpolation_duration:
-            progress = max(0.0, elapsed / self.interpolation_duration)
-            head = linear_pose_interpolation(self.start_head, self.base_head, progress)
-            antennas = (
-                (1.0 - progress) * self.start_antennas
-                + progress * self.neutral_antennas
-            )
-            return head, antennas, None
-
-        breathing_time = elapsed - self.interpolation_duration
-        z_offset = 0.005 * np.sin(2.0 * np.pi * 0.1 * breathing_time)
-        offset = create_head_pose(
-            z=z_offset,
-            degrees=True,
-            mm=False,
-        )
-        head = self.base_head @ offset
-        antenna_sway = np.deg2rad(15.0) * np.sin(
-            2.0 * np.pi * 0.5 * breathing_time
-        )
-        antennas = np.array([antenna_sway, -antenna_sway], dtype=np.float64)
-        return head, antennas, None
-
-
-class ListeningNodMotion:
-    """One short nod when local VAD starts hearing the user."""
-
-    def __init__(
-        self,
-        start_head: Any,
-        *,
-        base_head: Any | None = None,
-        interpolation_duration: float = 0.25,
-        nod_duration: float = 0.45,
-        max_pitch_degrees: float = 4.0,
-    ) -> None:
-        self.start_head = np.asarray(start_head, dtype=np.float64)
-        self.interpolation_duration = interpolation_duration
-        self.nod_duration = nod_duration
-        self.max_pitch_degrees = max_pitch_degrees
-        self.base_head = np.asarray(
-            base_head
-            if base_head is not None
-            else create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
-            dtype=np.float64,
-        )
-
-    def evaluate(self, elapsed: float) -> Any:
-        if elapsed < self.interpolation_duration:
-            progress = max(0.0, elapsed / self.interpolation_duration)
-            return linear_pose_interpolation(self.start_head, self.base_head, progress)
-        nod_time = max(0.0, elapsed - self.interpolation_duration)
-        if nod_time >= self.nod_duration:
-            pitch = 0.0
-        else:
-            progress = nod_time / self.nod_duration
-            pitch = self.max_pitch_degrees * np.sin(np.pi * progress)
-        return self.base_head @ create_head_pose(pitch=pitch, degrees=True)
-
-    def is_moving(self, elapsed: float) -> bool:
-        if elapsed < self.interpolation_duration:
-            return True
-        nod_time = max(0.0, elapsed - self.interpolation_duration)
-        return nod_time < self.nod_duration
-
-
-class SpeakingMotion:
-    """Subtle continuous head and antenna motion while Reachy speaks."""
-
-    def __init__(
-        self,
-        start_head: Any,
-        start_antennas: list[float],
-        *,
-        base_head: Any | None = None,
-        interpolation_duration: float = 0.3,
-    ) -> None:
-        self.start_head = np.asarray(start_head, dtype=np.float64)
-        self.start_antennas = np.asarray(start_antennas, dtype=np.float64)
-        self.interpolation_duration = interpolation_duration
-        self.base_head = np.asarray(
-            base_head
-            if base_head is not None
-            else create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
-            dtype=np.float64,
-        )
-        self.neutral_antennas = np.deg2rad([-10.0, 10.0])
-
-    def evaluate(self, elapsed: float) -> tuple[Any, np.ndarray]:
-        if elapsed < self.interpolation_duration:
-            progress = max(0.0, elapsed / self.interpolation_duration)
-            head = linear_pose_interpolation(self.start_head, self.base_head, progress)
-            antennas = (
-                (1.0 - progress) * self.start_antennas
-                + progress * self.neutral_antennas
-            )
-            return head, antennas
-
-        speaking_time = elapsed - self.interpolation_duration
-        pitch = (
-            1.8 * np.sin(2.0 * np.pi * 0.55 * speaking_time)
-            + 0.6 * np.sin(2.0 * np.pi * 1.1 * speaking_time + 0.4)
-        )
-        yaw = 2.6 * np.sin(2.0 * np.pi * 0.23 * speaking_time + 0.8)
-        roll = 1.2 * np.sin(2.0 * np.pi * 0.31 * speaking_time)
-        z_offset = 0.002 * np.sin(2.0 * np.pi * 0.7 * speaking_time)
-        offset = create_head_pose(
-            z=z_offset,
-            roll=roll,
-            pitch=pitch,
-            yaw=yaw,
-            degrees=True,
-            mm=False,
-        )
-        head = self.base_head @ offset
-        left = -10.0 + 5.0 * np.sin(2.0 * np.pi * 0.72 * speaking_time + 0.3)
-        right = 10.0 - 5.0 * np.sin(2.0 * np.pi * 0.67 * speaking_time + 1.1)
-        return head, np.deg2rad([left, right])
-
-
-TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "name": "look",
-        "description": "顔を安全なプリセット方向へ向ける。会話上必要なときだけ使う。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "direction": {
-                    "type": "string",
-                    "enum": ["front", "left", "right", "up", "down"],
-                }
-            },
-            "required": ["direction"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "nod",
-        "description": "肯定や同意を示すため、穏やかにうなずく。",
-        "parameters": {
-            "type": "object",
-            "properties": {"count": {"type": "integer", "minimum": 1, "maximum": 3}},
-            "required": ["count"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "shake_head",
-        "description": "否定を示すため、穏やかに首を横へ振る。",
-        "parameters": {
-            "type": "object",
-            "properties": {"count": {"type": "integer", "minimum": 1, "maximum": 3}},
-            "required": ["count"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "express",
-        "description": "頭とアンテナの安全なプリセットで感情を表現する。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "emotion": {
-                    "type": "string",
-                    "enum": ["neutral", "happy", "curious", "surprised", "sad"],
-                }
-            },
-            "required": ["emotion"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "type": "function",
-        "name": "stop_motion",
-        "description": "実行中および待機中のロボット動作を停止する。",
-        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-]
-
-
-class MotionController:
-    def __init__(self, robot: ReachyMotionAPI) -> None:
         self.robot = robot
-        self._queue: queue.Queue[MotionCommand | None] = queue.Queue(maxsize=8)
+        self._emotions = emotions
+        self._dances = dances
+        self._slot_lock = threading.Lock()
+        self._slot_cv = threading.Condition(self._slot_lock)
+        self._pending: _Activity | None = None
+        self._current: _Activity | None = None
+        self._record: Callable[..., None] | None = None
+        self._heartbeat: Callable[[], None] | None = None
+        self._cancel_reason: str = "stop"
         self._stop_event = threading.Event()
         self._cancel_event = threading.Event()
         self._idle_enabled = threading.Event()
@@ -277,19 +114,140 @@ class MotionController:
         self._get_base_head()
         self._thread.start()
 
+    def attach_recorder(self, record: Callable[..., None]) -> None:
+        self._record = record
+
+    def set_heartbeat(self, callback: Callable[[], None]) -> None:
+        self._heartbeat = callback
+
+    def _beat(self) -> None:
+        if self._heartbeat is None:
+            return
+        try:
+            self._heartbeat()
+        except Exception:
+            logger.debug("motion heartbeat callback failed", exc_info=True)
+
+    def _emit(self, event: str, **fields: Any) -> None:
+        if self._record is None:
+            return
+        try:
+            self._record(event, **fields)
+        except Exception:
+            logger.debug("motion event emission failed", exc_info=True)
+
+    def _start_activity(
+        self, name: str, priority: int, run: Callable[[], None], kind: str = "motion"
+    ) -> dict[str, Any]:
+        # Check-and-set under ONE lock hold — a split check/act races the worker clearing _current.
+        with self._slot_cv:
+            blocking = max(
+                (a for a in (self._current, self._pending) if a is not None),
+                key=lambda a: a.priority,
+                default=None,
+            )
+            if blocking is not None and priority < blocking.priority:
+                return {"ok": False, "error": f"busy: {blocking.name} is active at priority {blocking.priority}"}
+            if self._current is not None:
+                self._cancel_reason = "preempted"
+                self._cancel_event.set()
+            self._pending = _Activity(name, priority, run, kind)
+            self._slot_cv.notify()
+        return {"ok": True, "motion": name}
+
     def submit(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        self.set_listening_enabled(False)
-        self.set_speaking_enabled(False)
-        self.set_idle_enabled(False)
         command = self.validate(name, arguments)
         if name == "stop_motion":
-            self.stop_current()
-            return {"ok": True, "motion": name}
+            self.stop_current(reason="stop")
+            return {"ok": True, "motion": "stop_motion"}
+        if name == "play_emotion":
+            return self._submit_recorded("emotion", self._emotions, command.arguments["emotion"])
+        if name == "play_dance":
+            return self._submit_recorded("dance", self._dances, command.arguments["dance"])
+        if name == "stop_emotion":
+            return self._stop_recorded("emotion")
+        if name == "stop_dance":
+            return self._stop_recorded("dance")
+        if name == "look":
+            result = self._start_activity("look", MotionPriority.LOOK, lambda: self._execute(command))
+            if result["ok"]:
+                result["arguments"] = command.arguments
+            return result
+        # nod / shake_head / express
+        result = self._start_activity(name, MotionPriority.GESTURE, lambda: self._execute(command))
+        if result["ok"]:
+            result["arguments"] = command.arguments
+        return result
+
+    def play_recorded(self, kind: str, name: str, move: Any) -> dict[str, Any]:
+        if kind not in {"emotion", "dance"}:
+            raise ValueError(f"unknown recorded-move kind: {kind}")
+        priority = MotionPriority.EMOTION if kind == "emotion" else MotionPriority.DANCE
+        result = self._start_activity(name, priority, lambda: self._run_recorded(move), kind=kind)
+        if result.get("ok"):
+            result["motion"] = f"play_{kind}"
+            result[kind] = name
+            result["duration_s"] = round(float(move.duration), 1)
+        return result
+
+    def _submit_recorded(self, kind: str, catalog: RecordedMoveCatalog | None, name: str) -> dict[str, Any]:
+        if catalog is None or not catalog.available:
+            return {"ok": False, "error": f"{kind} catalog unavailable"}
+        move = catalog.get(name)  # ValueError for unknown names propagates to realtime's handler
+        return self.play_recorded(kind, name, move)
+
+    def _stop_recorded(self, kind: str) -> dict[str, Any]:
+        with self._slot_lock:
+            active = self._current or self._pending
+            matches = active is not None and active.kind == kind
+        if matches:
+            # cancel the foreground move only; background enables stay untouched
+            with self._slot_cv:
+                self._pending = None
+                self._cancel_reason = "stop"
+                self._cancel_event.set()
+        return {"ok": True, "motion": f"stop_{kind}", "stopped": matches}
+
+    def emotion_names(self) -> list[str]:
+        return self._emotions.names() if self._emotions is not None else []
+
+    def dance_names(self) -> list[str]:
+        return self._dances.names() if self._dances is not None else []
+
+    def tool_definitions(self) -> list[dict[str, Any]]:
+        return tools.tool_definitions(
+            emotions_available=self._emotions is not None and self._emotions.available,
+            dances_available=self._dances is not None and self._dances.available,
+        )
+
+    def _run_recorded(self, move: Any) -> None:
+        tick = 1.0 / RECORDED_MOVE_TICK_HZ
         try:
-            self._queue.put_nowait(command)
-        except queue.Full:
-            return {"ok": False, "error": "motion queue is full"}
-        return {"ok": True, "motion": name, "arguments": command.arguments}
+            head, antennas, body_yaw = move.evaluate(0.0)
+        except Exception:
+            logger.exception("Recorded move failed to evaluate its first frame")
+            return
+        try:
+            self.robot.goto_target(head=head, antennas=antennas, duration=0.4, body_yaw=body_yaw)
+        except Exception:
+            logger.debug("Initial goto for recorded move failed", exc_info=True)
+        started = time.monotonic()
+        duration = float(move.duration)
+        while not self._cancel_event.is_set() and not self._stop_event.is_set():
+            elapsed = time.monotonic() - started
+            if elapsed >= duration:
+                break
+            t = min(elapsed, duration - 1e-2)  # SDK evaluate() raises at/after the last timestamp
+            try:
+                head, antennas, body_yaw = move.evaluate(t)
+            except Exception:
+                logger.exception("Recorded move evaluation failed mid-play")
+                return
+            try:
+                self.robot.set_target(head=head, antennas=antennas, body_yaw=body_yaw)
+            except Exception:
+                logger.debug("Recorded move set_target failed", exc_info=True)
+            time.sleep(tick)
 
     def set_listening_enabled(self, enabled: bool) -> None:
         """Run one restrained nod when human speech starts."""
@@ -345,34 +303,69 @@ class MotionController:
             return MotionCommand(name, {"emotion": emotion})
         if name == "stop_motion":
             return MotionCommand(name, {})
+        if name == "play_emotion":
+            emotion = arguments.get("emotion")
+            if not isinstance(emotion, str):
+                raise ValueError("play_emotion requires a string 'emotion' argument")
+            return MotionCommand(name, {"emotion": emotion})
+        if name == "play_dance":
+            dance = arguments.get("dance")
+            if not isinstance(dance, str):
+                raise ValueError("play_dance requires a string 'dance' argument")
+            return MotionCommand(name, {"dance": dance})
+        if name == "stop_emotion":
+            return MotionCommand(name, {})
+        if name == "stop_dance":
+            return MotionCommand(name, {})
         raise ValueError(f"unknown motion tool: {name}")
 
-    def stop_current(self) -> None:
+    def stop_current(self, reason: str = "stop") -> None:
         self.set_idle_enabled(False)
         self._listening_enabled.clear()
         self._speaking_enabled.clear()
-        self._cancel_event.set()
-        while True:
-            try:
-                self._queue.get_nowait()
-                self._queue.task_done()
-            except queue.Empty:
-                break
+        with self._slot_cv:
+            self._cancel_reason = reason
+            self._cancel_event.set()
+            self._pending = None
+            self._slot_cv.notify()
         # ReachyMini.cancel_move() also calls media.stop_playing(). On Wireless,
         # capture and playback share one GStreamer pipeline, so that method also
-        # stops the microphone. The local cancel flag and queue drain are the
+        # stops the microphone. The local cancel flag and pending slot clear are the
         # safe way to stop motions owned by this controller.
 
     def close(self) -> None:
         self.set_idle_enabled(False)
         self._stop_event.set()
-        self.stop_current()
-        try:
-            self._queue.put_nowait(None)
-        except queue.Full:
-            pass
-        self._thread.join(timeout=2.0)
+        self.stop_current(reason="shutdown")
+        with self._slot_cv:
+            self._slot_cv.notify()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
         self._goto_absolute(0, 0, [0, 0], 0.7)
+
+    def _has_foreground(self) -> bool:
+        with self._slot_lock:
+            return self._current is not None or self._pending is not None
+
+    def _reset_ambient_generators(self) -> None:
+        self._idle_motion = None
+        self._idle_started_at = None
+        self._listening_motion = None
+        self._listening_started_at = None
+        self._listening_was_moving = None
+        self._speaking_motion = None
+        self._speaking_started_at = None
+
+    def _return_to_base(self) -> None:
+        try:
+            self.robot.goto_target(
+                head=self._get_base_head(),
+                antennas=np.deg2rad([-10.0, 10.0]),
+                duration=0.4,
+                body_yaw=None,
+            )
+        except Exception:
+            logger.debug("Could not return to base head", exc_info=True)
 
     def _get_base_head(self) -> np.ndarray:
         if self._base_head is None:
@@ -393,29 +386,42 @@ class MotionController:
 
     def _worker(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                command = self._queue.get(timeout=self._idle_period)
-            except queue.Empty:
-                self._update_ambient_motion()
+            with self._slot_cv:
+                if self._pending is None:
+                    self._slot_cv.wait(timeout=self._idle_period)
+                activity, self._pending = self._pending, None
+                if activity is not None:
+                    self._current = activity
+                    # Clear inside the lock so a concurrent _start_activity cannot
+                    # set the cancel event between us committing _current and here.
+                    self._cancel_event.clear()
+            self._beat()
+            if activity is None:
+                if not self._has_foreground():
+                    self._update_ambient_motion()
                 continue
-            if command is None:
-                self._queue.task_done()
-                return
-            self._idle_motion = None
-            self._idle_started_at = None
-            self._listening_motion = None
-            self._listening_started_at = None
-            self._listening_was_moving = None
-            self._speaking_motion = None
-            self._speaking_started_at = None
-            self._cancel_event.clear()
+            self._reset_ambient_generators()
+            self._cancel_reason = "stop"
+            started_at = time.monotonic()
+            family = activity.kind  # "motion" | "emotion" | "dance"
+            label_key = {"motion": "motion", "emotion": "emotion", "dance": "dance"}[family]
+            self._emit(f"{family}.started", **{label_key: activity.name, "priority": activity.priority})
             try:
-                self._execute(command)
+                activity.run()
             except Exception:
-                logger.exception("Motion failed: %s", command.name)
-            finally:
-                self._last_activity_at = time.monotonic()
-                self._queue.task_done()
+                logger.exception("Motion failed: %s", activity.name)
+            duration_ms = round((time.monotonic() - started_at) * 1000.0, 1)
+            if self._cancel_event.is_set():
+                self._emit("motion.cancelled", motion=activity.name, reason=self._cancel_reason)
+            else:
+                self._emit(f"{family}.completed", **{label_key: activity.name, "duration_ms": duration_ms})
+            with self._slot_lock:
+                self._current = None
+                has_pending = self._pending is not None
+            if not has_pending:
+                self._return_to_base()  # a preempting activity is about to move anyway — skip the detour
+            self._last_activity_at = time.monotonic()
+            self._beat()
 
     def _update_ambient_motion(self) -> None:
         if self._listening_enabled.is_set():

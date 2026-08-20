@@ -43,6 +43,8 @@ reachy_openai_realtime = ["**/*"] # Also include all non-.py files
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Dump thread stacks if any single test exceeds 120s — turns silent hangs into diagnosable failures
+faulthandler_timeout = 120
 
 [tool.ruff]
 line-length = 110
