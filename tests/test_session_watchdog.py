@@ -102,6 +102,53 @@ def test_watchdog_loop_records_event_and_reraises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Barge-in race: response.cancel loses to the response finishing server-side
+# ---------------------------------------------------------------------------
+
+
+def _bare_session(clock: FakeClock):
+    from reachy_openai_realtime.realtime import RealtimeRobotSession
+    from reachy_openai_realtime.runtime_status import RuntimeStatus
+
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.status = RuntimeStatus()
+    session.watchdog = DeadlineWatchdog(clock=clock)
+    return session
+
+
+def test_cancel_race_error_disarms_response_cancel_watchdog() -> None:
+    """response_cancel_not_active means the response already ended — the armed
+    response_cancel watchdog must be resolved, not escalate into a reconnect."""
+    from types import SimpleNamespace
+
+    clock = FakeClock()
+    session = _bare_session(clock)
+    session.watchdog.arm("response_cancel")
+
+    error = SimpleNamespace(
+        code="response_cancel_not_active",
+        message="Cancellation failed: no active response found",
+    )
+    assert session._handle_cancel_race_error(error) is True
+    clock.now += 60.0
+    assert session.watchdog.expired() is None
+    assert session.status.snapshot()["last_error"] is None
+
+
+def test_other_error_codes_do_not_resolve_cancel_watchdog() -> None:
+    from types import SimpleNamespace
+
+    clock = FakeClock()
+    session = _bare_session(clock)
+    session.watchdog.arm("response_cancel")
+
+    error = SimpleNamespace(code="server_error", message="boom")
+    assert session._handle_cancel_race_error(error) is False
+    clock.now += 60.0
+    assert session.watchdog.expired() is not None
+
+
+# ---------------------------------------------------------------------------
 # Bug B: add_event() args transposed at the watchdog warning site
 # ---------------------------------------------------------------------------
 

@@ -765,6 +765,17 @@ class RealtimeRobotSession:
             return True
         return False
 
+    def _handle_cancel_race_error(self, error: Any) -> bool:
+        """Barge-in race: response.cancel can lose to the response finishing
+        server-side, which answers response_cancel_not_active. The cancel's
+        post-condition (no active response) already holds, so resolve the armed
+        watchdog — otherwise it expires 3s later and tears the session down."""
+        if getattr(error, "code", None) != "response_cancel_not_active":
+            return False
+        self.watchdog.disarm("response_cancel")
+        logger.info("response.cancel raced response completion; already inactive")
+        return True
+
     def _prepare_output(self, pcm: np.ndarray, target_rate: int) -> np.ndarray:
         """Convert int16 PCM to float32 and resample to the output device rate."""
         return resample_linear(pcm16_to_float32(pcm), self.config.output_rate, target_rate)
@@ -995,6 +1006,8 @@ class RealtimeRobotSession:
             elif event_type == "error":
                 error = getattr(event, "error", event)
                 if self._handle_camera_protocol_error(error):
+                    continue
+                if self._handle_cancel_race_error(error):
                     continue
                 self.motion.set_idle_enabled(False)
                 logger.error("Realtime API error: %s", error)
