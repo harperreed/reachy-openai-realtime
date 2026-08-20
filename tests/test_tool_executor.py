@@ -95,3 +95,87 @@ def test_recent_ids_still_importable_from_realtime():
     from reachy_openai_realtime.tool_executor import RecentIds as FromExecutor
 
     assert FromRealtime is FromExecutor
+
+
+def test_duplicate_call_id_is_dropped():
+    async def scenario():
+        executor, outputs, events, _ = make_executor()
+
+        async def echo(arguments):
+            return {"ok": True}
+
+        executor.register("echo", echo, timeout_s=1.0)
+        first = await executor.submit(ToolInvocation(1, "call_dup", "echo", {}))
+        second = await executor.submit(ToolInvocation(1, "call_dup", "echo", {}))
+        await drain(executor)
+        assert first is True and second is False
+        assert len(outputs.outputs) == 1
+        assert ("tool.failed", {"name": "echo", "call_id": "call_dup", "error": "duplicate_call_id"}) in events.events
+
+    asyncio.run(scenario())
+
+
+def test_stale_epoch_rejected_at_submit():
+    async def scenario():
+        executor, outputs, events, epoch = make_executor()
+        epoch["value"] = 2
+        accepted = await executor.submit(ToolInvocation(1, "call_old", "echo", {}))
+        assert accepted is False
+        assert outputs.outputs == []
+        assert events.events[-1][1]["error"] == "stale_epoch"
+
+    asyncio.run(scenario())
+
+
+def test_stale_epoch_dropped_at_completion():
+    async def scenario():
+        executor, outputs, events, epoch = make_executor()
+        release = asyncio.Event()
+
+        async def slow(arguments):
+            await release.wait()
+            return {"ok": True}
+
+        executor.register("slow", slow, timeout_s=5.0)
+        await executor.submit(ToolInvocation(1, "call_racy", "slow", {}))
+        epoch["value"] = 2  # reconnect happened mid-flight
+        release.set()
+        await drain(executor)
+        assert outputs.outputs == []
+        assert events.events[-1][1]["error"] == "stale_epoch"
+
+    asyncio.run(scenario())
+
+
+def test_oversized_result_is_clamped():
+    async def scenario():
+        executor, outputs, _events, _ = make_executor()
+
+        async def bloated(arguments):
+            return {"ok": True, "blob": "x" * 20_000}
+
+        executor.register("bloated", bloated, timeout_s=1.0)
+        await executor.submit(ToolInvocation(1, "call_big", "bloated", {}))
+        await drain(executor)
+        (_, result, output, _) = outputs.outputs[0]
+        assert result == {"ok": False, "error": "result_too_large"}
+        assert len(output) < 100
+
+    asyncio.run(scenario())
+
+
+def test_non_dict_result_becomes_structured_error():
+    async def scenario():
+        executor, outputs, _events, _ = make_executor()
+
+        async def wrong(arguments):
+            return "not a dict"
+
+        executor.register("wrong", wrong, timeout_s=1.0)
+        await executor.submit(ToolInvocation(1, "call_wrong", "wrong", {}))
+        await drain(executor)
+        (_, result, _, _) = outputs.outputs[0]
+        assert result["ok"] is False
+        assert "non-dict" in result["error"]
+
+    asyncio.run(scenario())
