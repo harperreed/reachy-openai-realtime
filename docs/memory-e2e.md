@@ -7,3 +7,16 @@
 5. Ask "what do you remember about my kazoo?" — the first recall (or, once a nap has
    run, the wake block) must reflect the fact.
 6. Confirm application.log and events.jsonl contain no memory text.
+
+## Dashboard (PR 2)
+
+On the robot (or via tailscale to it):
+
+    curl -s http://<robot>:8042/api/memory | jq .
+    curl -s -X POST http://<robot>:8042/api/memory/<mem_id>/pin \
+      -H 'Content-Type: application/json' -d '{"pinned": true}' | jq .
+    curl -s -X DELETE http://<robot>:8042/api/memory/<mem_id> | jq .
+
+Then in the browser dashboard: panel lists notes newest-first with kind and
+source, search filters, pin toggles the star, delete removes the row, and the
+count updates. Verify in all-languages dropdown that the panel headings translate.
