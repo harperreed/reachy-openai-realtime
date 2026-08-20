@@ -15,8 +15,9 @@ work.
 1. Redact OpenAI-style API keys from every formatted line written to `application.log`, including normal
    messages and formatted exception output. Reuse the existing `redact_secrets` function so both log sinks
    share one redaction rule.
-2. Enable GitHub private vulnerability reporting for the repository and link
-   `https://github.com/tinjyuu/reachy-openai-realtime/security/advisories/new` from `SECURITY.md`.
+2. State that GitHub private vulnerability reporting is not configured. Direct reporters who need private
+   coordination to open a public issue containing no vulnerability details, credentials, logs, or
+   reproduction steps.
 3. Add `id_rsa`, `id_dsa`, `id_ecdsa`, and `id_ed25519` to `.gitignore` while keeping the existing secret
    scanner.
 
@@ -51,9 +52,9 @@ The test will use the real logging path and handler; it will not mock logging be
 
 ### Repository security settings
 
-Use GitHub's repository API to enable private vulnerability reporting, then confirm the setting through a
-read-only API call. Update `SECURITY.md` with the direct advisory form. This is the only external state
-change.
+Keep GitHub's hosted setting unchanged. A 2026-08-19 enable attempt failed because the available account
+does not have repository administrator access. Update `SECURITY.md` to state the current limitation and a
+safe coordination path without claiming that a private report form exists.
 
 ### Documentation edits
 
@@ -70,13 +71,14 @@ Success requires:
 3. `uv run ruff check .` passes.
 4. `uv run pytest` passes.
 5. `uv run reachy-mini-app-assistant check .` passes.
-6. GitHub reports private vulnerability reporting as enabled and the documented advisory URL resolves.
+6. GitHub reports private vulnerability reporting as disabled and `SECURITY.md` does not claim otherwise.
 7. A focused documentation re-audit finds none of the eight false claims from the 2026-08-18 report.
 
 ## Risks and limits
 
 - Redaction recognizes the OpenAI-style key pattern implemented by `redact_secrets`; it is not a general
   data-loss prevention system.
-- GitHub private reporting depends on repository-hosted state and can later be disabled outside Git.
+- GitHub private reporting remains unavailable until a repository administrator enables it outside this
+  change.
 - Wireless hardware outcomes remain manual checks until they are run on a named robot image and SDK
   version.

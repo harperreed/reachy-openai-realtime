@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Enforce application-log key redaction, enable private vulnerability reporting, and make the user-facing documentation match current behavior.
+**Goal:** Enforce application-log key redaction and make the user-facing documentation match current behavior and repository security settings.
 
-**Architecture:** Reuse `observability.events.redact_secrets` in a formatter that redacts the final rendered application-log line. Keep product behavior unchanged elsewhere; narrow claims about localization, state transitions, legacy key loading, release gates, and hardware outcomes. Enable GitHub's repository-hosted private reporting through its documented REST endpoint.
+**Architecture:** Reuse `observability.events.redact_secrets` in a formatter that redacts the final rendered application-log line. Keep product behavior unchanged elsewhere; narrow claims about localization, state transitions, legacy key loading, release gates, hardware outcomes, and the unavailable private-reporting channel.
 
 **Tech Stack:** Python 3.10+, standard-library `logging`, pytest, Ruff, GitHub REST API through `gh`, Markdown.
 
@@ -15,7 +15,8 @@
 - Preserve process-environment and legacy `.env` loading behavior.
 - Do not add dependencies, an API reference, a release workflow, full runtime localization, or a new migration path.
 - Use TDD for the application-log change: observe the regression test fail before implementation and pass afterward.
-- The only external state change is enabling GitHub private vulnerability reporting for `tinjyuu/reachy-openai-realtime`.
+- Make no external state changes. The available GitHub account lacks administrator access, so private
+  vulnerability reporting remains disabled.
 
 ---
 
@@ -24,7 +25,7 @@
 - `reachy_openai_realtime/main.py`: format and attach the redacted `application.log` handler.
 - `tests/test_main_logging.py`: real-file regression coverage for message and exception redaction.
 - `.gitignore`: ignore common extensionless SSH private-key filenames.
-- `SECURITY.md`: document the enabled private report route and exact credential safeguards.
+- `SECURITY.md`: document the unavailable private report route and exact credential safeguards.
 - `README.md`: correct localization, key-path, FSM, and log-redaction claims.
 - `docs/WIRELESS.md`: state image prerequisites and distinguish code behavior from manual hardware checks.
 
@@ -142,7 +143,7 @@ git add reachy_openai_realtime/main.py tests/test_main_logging.py
 git commit -m "fix: redact API keys from application logs"
 ```
 
-### Task 2: Enable and document private vulnerability reporting
+### Task 2: Document repository security limits
 
 **Files:**
 - Modify: `.gitignore`
@@ -150,8 +151,7 @@ git commit -m "fix: redact API keys from application logs"
 
 **Interfaces:**
 - Consumes: GitHub REST endpoint `/repos/{owner}/{repo}/private-vulnerability-reporting`
-- Produces: an enabled repository setting and the public documentation link
-  `https://github.com/tinjyuu/reachy-openai-realtime/security/advisories/new`
+- Produces: exact documentation of the disabled setting and safe public coordination instructions
 
 - [ ] **Step 1: Confirm the current hosted setting**
 
@@ -161,32 +161,22 @@ Run:
 gh api repos/tinjyuu/reachy-openai-realtime/private-vulnerability-reporting
 ```
 
-Expected before mutation: `{"enabled":false}`. If it is already true, record that and do not issue the PUT.
+Expected: `{"enabled":false}`.
 
-- [ ] **Step 2: Enable private vulnerability reporting**
+- [ ] **Step 2: Confirm that no mutation is authorized or possible**
 
-Run only when Step 1 reports false:
+Read `.superpowers/sdd/task-2-report.md`. It records the failed administrator-only PUT, the unchanged
+`{"enabled":false}` state, and the active account's `admin=false` permission. Do not repeat the PUT.
 
-```bash
-gh api --method PUT \
-  -H "Accept: application/vnd.github+json" \
-  -H "X-GitHub-Api-Version: 2022-11-28" \
-  repos/tinjyuu/reachy-openai-realtime/private-vulnerability-reporting
-```
-
-Expected: HTTP 204 with no response body. This is the approved external security-setting change.
-
-- [ ] **Step 3: Verify the hosted setting**
+- [ ] **Step 3: Reverify the hosted setting**
 
 Run:
 
 ```bash
 gh api repos/tinjyuu/reachy-openai-realtime/private-vulnerability-reporting
-curl -L --max-time 20 -sS -o /dev/null -w '%{http_code}\n' \
-  https://github.com/tinjyuu/reachy-openai-realtime/security/advisories/new
 ```
 
-Expected: `{"enabled":true}` and HTTP 200.
+Expected: `{"enabled":false}`.
 
 - [ ] **Step 4: Expand exact Git ignore rules**
 
@@ -216,8 +206,9 @@ Keep the existing headings and use this content:
 
 ## Reporting a vulnerability
 
-Do not disclose vulnerabilities or exposed credentials in a public issue. Report them through
-[GitHub private vulnerability reporting](https://github.com/tinjyuu/reachy-openai-realtime/security/advisories/new).
+Do not disclose vulnerabilities or exposed credentials in a public issue. GitHub private vulnerability
+reporting is not currently configured for this repository. To request private coordination, open a public
+issue that contains no vulnerability details, credentials, logs, or reproduction steps.
 
 If an OpenAI API key may have been exposed, revoke it in the OpenAI dashboard before reporting the related
 code issue. Do not include the key in the report.
@@ -249,7 +240,7 @@ Expected: the secret scan passes and the diff has no whitespace errors.
 
 ```bash
 git add .gitignore SECURITY.md
-git commit -m "docs: document enforced credential safeguards"
+git commit -m "docs: document credential safeguards"
 ```
 
 ### Task 3: Correct README and Wireless behavior claims
@@ -394,15 +385,14 @@ uv run reachy-mini-app-assistant check .
 Expected: secret scan passes, Ruff reports no errors, all tests pass, and the Reachy app check reports that
 the app passed all checks.
 
-- [ ] **Step 2: Recheck hosted state and documentation links**
+- [ ] **Step 2: Recheck hosted state and policy wording**
 
 ```bash
 gh api repos/tinjyuu/reachy-openai-realtime/private-vulnerability-reporting
-curl -L --max-time 20 -sS -o /dev/null -w '%{http_code} %{url_effective}\n' \
-  https://github.com/tinjyuu/reachy-openai-realtime/security/advisories/new
+rg -n "not currently configured|no vulnerability details" SECURITY.md
 ```
 
-Expected: `{"enabled":true}` and HTTP 200 at the advisory form.
+Expected: `{"enabled":false}` and both safe-reporting phrases in `SECURITY.md`.
 
 - [ ] **Step 3: Perform a focused re-audit**
 
