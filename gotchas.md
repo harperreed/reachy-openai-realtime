@@ -49,3 +49,8 @@
   Diagnose with `curl localhost:8000/api/apps/current-app-status` on the robot; `state:
   "stopping"` with no app process = the wedge. `uvx` lives at `/opt/uv` on Reachy OS if you
   need py-spy.
+- **Recorded moves are played by our own MotionManager loop, never `ReachyMini.play_move`.**
+  `play_move`'s cancel path is `cancel_move()` → `media.stop_playing()`, which stalls the shared
+  Wireless mic pipeline. Sidecar emotion sounds are skipped for the same reason (the speaker
+  belongs to the Realtime audio path). Catalog names are sanitized (`^[A-Za-z0-9 _-]{1,64}$`)
+  before they enter session instructions — dataset filenames are third-party input.

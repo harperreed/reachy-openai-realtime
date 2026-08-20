@@ -26,7 +26,7 @@ It connects the robot directly to OpenAI `gpt-realtime-2.1` for speech-to-speech
 - English by default, with the entire UI and runtime log following the selected language
 - Local far-field voice activity detection tuned for the Wireless ReSpeaker
 - Barge-in: speaking while Reachy responds cancels queued audio and truncates conversation audio correctly
-- Safe semantic motion tools: `look`, `nod`, `shake_head`, `express`, and `stop_motion`; ambient motions preserve the selected look direction
+- Safe semantic motion tools: `look`, `nod`, `shake_head`, `express`, `play_emotion`, `stop_emotion`, `play_dance`, `stop_dance`, and `stop_motion`; ambient motions preserve the selected look direction
 - Gentle idle motion, one short listening nod, and subtle head/antenna motion while Reachy speaks
 - Optional camera input, disabled by default, sending one still image when speech starts
 - Persistent cumulative input/output token totals and a USD estimate from `response.done` usage
@@ -99,6 +99,40 @@ uv run reachy-mini-app-assistant check .
 ```
 
 The motion layer validates tool names and arguments and maps them to bounded presets. The model never receives raw joint-angle control.
+
+### Motion tools
+
+| Tool | What it does |
+|---|---|
+| `look` | Turns Reachy's head toward a direction preset |
+| `nod` | Short vertical nod |
+| `shake_head` | Short horizontal shake |
+| `express` | Antenna and head expression from a built-in set |
+| `play_emotion` | Plays a named recorded move from [`pollen-robotics/reachy-mini-emotions-library`](https://huggingface.co/datasets/pollen-robotics/reachy-mini-emotions-library); validated against the live catalog on startup |
+| `stop_emotion` | Cancels any running emotion move |
+| `play_dance` | Plays a named recorded move from [`pollen-robotics/reachy-mini-dances-library`](https://huggingface.co/datasets/pollen-robotics/reachy-mini-dances-library); validated against the live catalog on startup |
+| `stop_dance` | Cancels any running dance move |
+| `stop_motion` | Stops all motion immediately; always wins regardless of what is running |
+
+Catalog tools (`play_emotion`, `play_dance`) are advertised to the model only when their respective catalog is ready. If a catalog is unavailable the tools are absent from the session and voice conversation continues without them (§25).
+
+### Motion priority (§12)
+
+Multiple motion requests are arbitrated by priority. An incoming request preempts the current motion if and only if its priority is equal to or higher than the running one. Lower-priority requests are rejected with a "busy" reply the model can react to.
+
+| Priority | Name | Examples |
+|---|---|---|
+| 100 | STOP | `stop_motion` |
+| 90 | BARGE_IN | user interruption |
+| 75 | GESTURE | `nod`, `shake_head`, `look` |
+| 70 | EMOTION | `play_emotion` |
+| 65 | DANCE | `play_dance` |
+| 45 | LOOK | ambient look direction |
+| 20 | SPEAKING | head/antenna motion while speaking |
+| 15 | LISTENING | listening nod |
+| 10 | IDLE | breathing idle |
+
+`stop_motion` (priority 100) always preempts everything.
 
 The usage panel starts tracking after this feature is installed. It stores token counters only in the robot's private app configuration directory; it does not store conversation audio or transcripts. The USD amount is an estimate based on the published `gpt-realtime-2.1` rates and should be checked against the OpenAI billing dashboard for the final amount.
 
