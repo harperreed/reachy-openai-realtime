@@ -216,8 +216,8 @@ class MotionManager:
 
     def tool_definitions(self) -> list[dict[str, Any]]:
         return tools.tool_definitions(
-            emotions_available=self._emotions is not None and self._emotions.available,
-            dances_available=self._dances is not None and self._dances.available,
+            emotions=self.emotion_names(),
+            dances=self.dance_names(),
         )
 
     def _run_recorded(self, move: Any) -> None:

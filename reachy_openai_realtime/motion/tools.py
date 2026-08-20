@@ -2,6 +2,7 @@
 # ABOUTME: JSON schemas sent to the model so it can invoke motion commands.
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -46,7 +47,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "express",
-        "description": "頭とアンテナの安全なプリセットで感情を表現する。",
+        "description": "頭とアンテナの小さなプリセット動作で、会話中にさりげなく感情のニュアンスを添える。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -72,7 +73,7 @@ RECORDED_MOVE_TOOL_DEFINITIONS: dict[str, list[dict[str, Any]]] = {
         {
             "type": "function",
             "name": "play_emotion",
-            "description": "収録済みの感情ジェスチャーを再生する。emotionには利用可能なエモーション名を正確に指定する。",
+            "description": "収録済みの表情豊かな感情ジェスチャー（数秒間の全身パフォーマンス）を再生する。感情を見せてと言われたらexpressよりこちらを優先する。",
             "parameters": {
                 "type": "object",
                 "properties": {"emotion": {"type": "string"}},
@@ -91,7 +92,7 @@ RECORDED_MOVE_TOOL_DEFINITIONS: dict[str, list[dict[str, Any]]] = {
         {
             "type": "function",
             "name": "play_dance",
-            "description": "収録済みのダンスを再生する。danceには利用可能なダンス名を正確に指定する。",
+            "description": "収録済みのダンス（数秒間の全身パフォーマンス）を再生する。踊ってと言われたらこれを使う。",
             "parameters": {
                 "type": "object",
                 "properties": {"dance": {"type": "string"}},
@@ -109,10 +110,18 @@ RECORDED_MOVE_TOOL_DEFINITIONS: dict[str, list[dict[str, Any]]] = {
 }
 
 
-def tool_definitions(*, emotions_available: bool, dances_available: bool) -> list[dict[str, Any]]:
+def _recorded_entries(kind: str, play_name: str, param: str, names: list[str]) -> list[dict[str, Any]]:
+    entries = copy.deepcopy(RECORDED_MOVE_TOOL_DEFINITIONS[kind])
+    for entry in entries:
+        if entry["name"] == play_name:
+            entry["parameters"]["properties"][param]["enum"] = list(names)
+    return entries
+
+
+def tool_definitions(*, emotions: list[str], dances: list[str]) -> list[dict[str, Any]]:
     tools = list(TOOL_DEFINITIONS)
-    if emotions_available:
-        tools.extend(RECORDED_MOVE_TOOL_DEFINITIONS["emotion"])
-    if dances_available:
-        tools.extend(RECORDED_MOVE_TOOL_DEFINITIONS["dance"])
+    if emotions:
+        tools.extend(_recorded_entries("emotion", "play_emotion", "emotion", emotions))
+    if dances:
+        tools.extend(_recorded_entries("dance", "play_dance", "dance", dances))
     return tools

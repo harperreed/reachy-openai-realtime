@@ -20,6 +20,18 @@ def test_recorded_moves_instructions_omits_absent_catalog() -> None:
     assert "play_dance" not in text
 
 
+def test_recorded_moves_instructions_prefer_recorded_over_express() -> None:
+    """Without an explicit preference the model picks express (its enum matches
+    'show happy' requests directly) and the recorded library never plays."""
+    text = recorded_moves_instructions(["happy1"], ["spin"])
+    assert "prefer play_emotion / play_dance" in text
+    assert "express" in text
+
+    emotions_only = recorded_moves_instructions(["happy1"], [])
+    assert "prefer play_emotion" in emotions_only
+    assert "play_dance" not in emotions_only
+
+
 class _StubMotion:
     """Minimal MotionManager face for _session_config: bare tools, no catalogs."""
 
