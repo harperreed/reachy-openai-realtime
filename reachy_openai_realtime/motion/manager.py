@@ -137,7 +137,10 @@ class MotionManager:
             self.stop_current(reason="stop")
             return {"ok": True, "motion": "stop_motion"}
         if name == "look":
-            return self._start_activity("look", MotionPriority.LOOK, lambda: self._execute(command))
+            result = self._start_activity("look", MotionPriority.LOOK, lambda: self._execute(command))
+            if result["ok"]:
+                result["arguments"] = command.arguments
+            return result
         # nod / shake_head / express
         result = self._start_activity(name, MotionPriority.GESTURE, lambda: self._execute(command))
         if result["ok"]:
@@ -273,12 +276,14 @@ class MotionManager:
                 activity, self._pending = self._pending, None
                 if activity is not None:
                     self._current = activity
+                    # Clear inside the lock so a concurrent _start_activity cannot
+                    # set the cancel event between us committing _current and here.
+                    self._cancel_event.clear()
             if activity is None:
                 if not self._has_foreground():
                     self._update_ambient_motion()
                 continue
             self._reset_ambient_generators()
-            self._cancel_event.clear()
             self._cancel_reason = "stop"
             started_at = time.monotonic()
             family = activity.kind  # "motion" | "emotion" | "dance"
