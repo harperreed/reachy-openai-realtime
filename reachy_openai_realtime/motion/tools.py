@@ -66,3 +66,53 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
 ]
+
+RECORDED_MOVE_TOOL_DEFINITIONS: dict[str, list[dict[str, Any]]] = {
+    "emotion": [
+        {
+            "type": "function",
+            "name": "play_emotion",
+            "description": "収録済みの感情ジェスチャーを再生する。emotionには利用可能なエモーション名を正確に指定する。",
+            "parameters": {
+                "type": "object",
+                "properties": {"emotion": {"type": "string"}},
+                "required": ["emotion"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "stop_emotion",
+            "description": "再生中のエモーションを停止する。",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    ],
+    "dance": [
+        {
+            "type": "function",
+            "name": "play_dance",
+            "description": "収録済みのダンスを再生する。danceには利用可能なダンス名を正確に指定する。",
+            "parameters": {
+                "type": "object",
+                "properties": {"dance": {"type": "string"}},
+                "required": ["dance"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "stop_dance",
+            "description": "再生中のダンスを停止する。",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    ],
+}
+
+
+def tool_definitions(*, emotions_available: bool, dances_available: bool) -> list[dict[str, Any]]:
+    tools = list(TOOL_DEFINITIONS)
+    if emotions_available:
+        tools.extend(RECORDED_MOVE_TOOL_DEFINITIONS["emotion"])
+    if dances_available:
+        tools.extend(RECORDED_MOVE_TOOL_DEFINITIONS["dance"])
+    return tools

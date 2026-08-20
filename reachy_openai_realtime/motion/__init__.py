@@ -11,12 +11,13 @@ from .manager import (
     ReachyMotionAPI,
 )
 from .recorded_moves import DANCES_DATASET, EMOTIONS_DATASET, RecordedMoveCatalog
-from .tools import TOOL_DEFINITIONS
+from .tools import RECORDED_MOVE_TOOL_DEFINITIONS, TOOL_DEFINITIONS, tool_definitions
 
 __all__ = [
     "DANCES_DATASET",
     "EMOTIONS_DATASET",
     "RECORDED_MOVE_TICK_HZ",
+    "RECORDED_MOVE_TOOL_DEFINITIONS",
     "TOOL_DEFINITIONS",
     "Direction",
     "Emotion",
@@ -28,4 +29,5 @@ __all__ = [
     "ReachyMotionAPI",
     "RecordedMoveCatalog",
     "SpeakingMotion",
+    "tool_definitions",
 ]

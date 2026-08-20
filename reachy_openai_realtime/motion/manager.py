@@ -13,7 +13,9 @@ from typing import Any, Literal, Protocol
 import numpy as np
 from reachy_mini.utils import create_head_pose
 
+from . import tools
 from .builtin import IdleBreathingMotion, ListeningNodMotion, SpeakingMotion
+from .recorded_moves import RecordedMoveCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +75,16 @@ class _Activity:
 
 
 class MotionManager:
-    def __init__(self, robot: ReachyMotionAPI) -> None:
+    def __init__(
+        self,
+        robot: ReachyMotionAPI,
+        *,
+        emotions: RecordedMoveCatalog | None = None,
+        dances: RecordedMoveCatalog | None = None,
+    ) -> None:
         self.robot = robot
+        self._emotions = emotions
+        self._dances = dances
         self._slot_lock = threading.Lock()
         self._slot_cv = threading.Condition(self._slot_lock)
         self._pending: _Activity | None = None
@@ -150,6 +160,14 @@ class MotionManager:
         if name == "stop_motion":
             self.stop_current(reason="stop")
             return {"ok": True, "motion": "stop_motion"}
+        if name == "play_emotion":
+            return self._submit_recorded("emotion", self._emotions, command.arguments["emotion"])
+        if name == "play_dance":
+            return self._submit_recorded("dance", self._dances, command.arguments["dance"])
+        if name == "stop_emotion":
+            return self._stop_recorded("emotion")
+        if name == "stop_dance":
+            return self._stop_recorded("dance")
         if name == "look":
             result = self._start_activity("look", MotionPriority.LOOK, lambda: self._execute(command))
             if result["ok"]:
@@ -171,6 +189,36 @@ class MotionManager:
             result[kind] = name
             result["duration_s"] = round(float(move.duration), 1)
         return result
+
+    def _submit_recorded(self, kind: str, catalog: RecordedMoveCatalog | None, name: str) -> dict[str, Any]:
+        if catalog is None or not catalog.available:
+            return {"ok": False, "error": f"{kind} catalog unavailable"}
+        move = catalog.get(name)  # ValueError for unknown names propagates to realtime's handler
+        return self.play_recorded(kind, name, move)
+
+    def _stop_recorded(self, kind: str) -> dict[str, Any]:
+        with self._slot_lock:
+            active = self._current or self._pending
+            matches = active is not None and active.kind == kind
+        if matches:
+            # cancel the foreground move only; background enables stay untouched
+            with self._slot_cv:
+                self._pending = None
+                self._cancel_reason = "stop"
+                self._cancel_event.set()
+        return {"ok": True, "motion": f"stop_{kind}", "stopped": matches}
+
+    def emotion_names(self) -> list[str]:
+        return self._emotions.names() if self._emotions is not None else []
+
+    def dance_names(self) -> list[str]:
+        return self._dances.names() if self._dances is not None else []
+
+    def tool_definitions(self) -> list[dict[str, Any]]:
+        return tools.tool_definitions(
+            emotions_available=self._emotions is not None and self._emotions.available,
+            dances_available=self._dances is not None and self._dances.available,
+        )
 
     def _run_recorded(self, move: Any) -> None:
         tick = 1.0 / RECORDED_MOVE_TICK_HZ
@@ -254,6 +302,20 @@ class MotionManager:
                 raise ValueError("invalid emotion")
             return MotionCommand(name, {"emotion": emotion})
         if name == "stop_motion":
+            return MotionCommand(name, {})
+        if name == "play_emotion":
+            emotion = arguments.get("emotion")
+            if not isinstance(emotion, str):
+                raise ValueError("play_emotion requires a string 'emotion' argument")
+            return MotionCommand(name, {"emotion": emotion})
+        if name == "play_dance":
+            dance = arguments.get("dance")
+            if not isinstance(dance, str):
+                raise ValueError("play_dance requires a string 'dance' argument")
+            return MotionCommand(name, {"dance": dance})
+        if name == "stop_emotion":
+            return MotionCommand(name, {})
+        if name == "stop_dance":
             return MotionCommand(name, {})
         raise ValueError(f"unknown motion tool: {name}")
 
