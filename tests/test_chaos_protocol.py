@@ -327,10 +327,14 @@ def test_tool_requested_and_completed_events_recorded() -> None:
     motion = _SubmittingMotion()
     session.motion = motion
     session._pending_tool_outputs = []
+
+    async def _set_emotion_handler(args):
+        return await asyncio.to_thread(motion.submit, "set_emotion", args)
+
     # Register set_emotion so the executor can dispatch it (mirrors _register_motion_tools).
     session.tools.register(
         "set_emotion",
-        lambda args: asyncio.to_thread(motion.submit, "set_emotion", args),
+        _set_emotion_handler,
         timeout_s=10.0,
         category="motion",
     )
