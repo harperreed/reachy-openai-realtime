@@ -381,3 +381,27 @@ def test_recorder_absence_does_not_break_motion() -> None:
     assert manager.submit("nod", {"count": 1})["ok"] is True
     assert wait_until(lambda: len(robot.targets) > 0)
     manager.close()
+
+
+def test_worker_loop_beats_heartbeat() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    beats: list[float] = []
+    manager.set_heartbeat(lambda: beats.append(time.monotonic()))
+    manager.start()
+    assert wait_until(lambda: len(beats) >= 3)
+    manager.close()
+
+
+def test_heartbeat_exception_does_not_kill_worker() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+
+    def broken() -> None:
+        raise RuntimeError("health sink down")
+
+    manager.set_heartbeat(broken)
+    manager.start()
+    assert manager.submit("nod", {"count": 1})["ok"] is True
+    assert wait_until(lambda: len(robot.targets) > 0)
+    manager.close()

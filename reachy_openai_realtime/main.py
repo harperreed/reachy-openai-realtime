@@ -319,8 +319,9 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             event=True,
             detail_key="detail_starting_audio",
         )
+        motion.attach_recorder(self.runtime_status.record_event)
+        motion.set_heartbeat(lambda: self.runtime_status.set_component_health("motion", True))
         motion.start()
-        self.runtime_status.set_component_health("motion", True, expires=False)
         reachy_mini.media.start_recording()
         reachy_mini.media.start_playing()
         audio_started_at = time.monotonic()

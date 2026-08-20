@@ -78,6 +78,7 @@ class MotionManager:
         self._pending: _Activity | None = None
         self._current: _Activity | None = None
         self._record: Callable[..., None] | None = None
+        self._heartbeat: Callable[[], None] | None = None
         self._cancel_reason: str = "stop"
         self._stop_event = threading.Event()
         self._cancel_event = threading.Event()
@@ -103,6 +104,17 @@ class MotionManager:
 
     def attach_recorder(self, record: Callable[..., None]) -> None:
         self._record = record
+
+    def set_heartbeat(self, callback: Callable[[], None]) -> None:
+        self._heartbeat = callback
+
+    def _beat(self) -> None:
+        if self._heartbeat is None:
+            return
+        try:
+            self._heartbeat()
+        except Exception:
+            logger.debug("motion heartbeat callback failed", exc_info=True)
 
     def _emit(self, event: str, **fields: Any) -> None:
         if self._record is None:
@@ -279,6 +291,7 @@ class MotionManager:
                     # Clear inside the lock so a concurrent _start_activity cannot
                     # set the cancel event between us committing _current and here.
                     self._cancel_event.clear()
+            self._beat()
             if activity is None:
                 if not self._has_foreground():
                     self._update_ambient_motion()
@@ -304,6 +317,7 @@ class MotionManager:
             if not has_pending:
                 self._return_to_base()  # a preempting activity is about to move anyway — skip the detour
             self._last_activity_at = time.monotonic()
+            self._beat()
 
     def _update_ambient_motion(self) -> None:
         if self._listening_enabled.is_set():
