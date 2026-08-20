@@ -2,16 +2,20 @@
 
 ## Reporting a vulnerability
 
-Please do not disclose vulnerabilities or exposed credentials in a public issue.
-Use GitHub's private vulnerability reporting for this repository when available.
+Do not disclose vulnerabilities or exposed credentials in a public issue. GitHub private vulnerability
+reporting is not currently configured for this repository. To request private coordination, open a public
+issue that contains no vulnerability details, credentials, logs, or reproduction steps.
 
-If an OpenAI API key may have been exposed, revoke it immediately in the OpenAI
-dashboard before reporting the related code issue.
+If an OpenAI API key may have been exposed, revoke it in the OpenAI dashboard before reporting the related
+code issue. Do not include the key in the report.
 
 ## Credential handling
 
-- API keys are stored only in the robot's persistent user configuration directory.
-- The key file and its directory use permissions `0600` and `0700` respectively.
+- The settings UI saves API keys in the robot's persistent user configuration directory. Directories and
+  key files created or updated by the app use modes `0700` and `0600` respectively.
+- Temporary development sessions may use `OPENAI_API_KEY`, and existing legacy `.env` files may be loaded
+  or migrated. See `docs/WIRELESS.md` for the supported setup paths.
 - Settings APIs report only whether a key exists; they never return its value.
-- `.env`, private-key, and common secret files are ignored by Git.
-- `scripts/check_secrets.py` runs locally and in CI before release.
+- Git ignores `.env`, `.env.*`, `*.pem`, `*.key`, `secrets.*`, and common extensionless SSH private-key
+  filenames. `.env.example` remains allowed.
+- `scripts/check_secrets.py` runs on demand and in CI for pushes and pull requests.
