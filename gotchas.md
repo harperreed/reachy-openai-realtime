@@ -3,7 +3,7 @@
 - **Reachy Mini Wireless shares ONE GStreamer pipeline for mic and speaker.**
   `media.stop_playing()` and `ReachyMini.cancel_move()` stall the microphone. After
   `audio.clear_player()`, always re-assert `media.start_recording()` (see `_clear_playback` in
-  `reachy_openai_realtime/realtime.py` and `stop_current` in `motion.py`).
+  `reachy_openai_realtime/realtime.py` and `stop_current` in `motion/manager.py`).
 - **`media.get_audio_sample()` must be drained continuously** — it returns everything buffered
   since the last call, and the SDK-side buffer grows without bound otherwise (reachy_mini
   issue #436). Never gate the drain on conversation state; gate downstream consumption.

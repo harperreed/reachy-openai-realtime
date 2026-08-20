@@ -323,9 +323,9 @@ class MotionManager:
         self.set_idle_enabled(False)
         self._listening_enabled.clear()
         self._speaking_enabled.clear()
-        self._cancel_reason = reason
-        self._cancel_event.set()
         with self._slot_cv:
+            self._cancel_reason = reason
+            self._cancel_event.set()
             self._pending = None
             self._slot_cv.notify()
         # ReachyMini.cancel_move() also calls media.stop_playing(). On Wireless,
