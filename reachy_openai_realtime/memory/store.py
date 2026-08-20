@@ -1,5 +1,6 @@
 # ABOUTME: SQLite persistence for robot memory (spec §4): append-only notes,
 # ABOUTME: rewritable summary tree, FTS5 index. Sync API; async callers use asyncio.to_thread.
+# Known limitation: FTS5 unicode61 tokenizer does not segment CJK well; Japanese recall is limited.
 from __future__ import annotations
 
 import re
@@ -8,7 +9,7 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NOTE_TEXT_MAX_CHARS = 500
@@ -215,6 +216,258 @@ class MemoryStore:
                     [(timestamp, note_id) for note_id in note_ids],
                 )
 
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    def search(self, match_expression: str, limit: int) -> list[SearchHit]:
+        if not match_expression:
+            return []
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT id, entry_type, bm25(memory_fts) AS rank FROM memory_fts "
+                "WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+                (match_expression, limit * 3),  # overfetch: tombstone filtering happens below
+            ).fetchall()
+            cutoff = _recency_cutoff(self._now())
+            hits: list[SearchHit] = []
+            for row in rows:
+                if row["entry_type"] == "note":
+                    note_row = self._db().execute(
+                        "SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL", (row["id"],)
+                    ).fetchone()
+                    if note_row is None:
+                        continue
+                    score = float(row["rank"])
+                    if note_row["pinned"]:
+                        score -= PINNED_BOOST
+                    last_used = note_row["last_used_at"] or ""
+                    if max(note_row["created_at"], last_used) >= cutoff:
+                        score -= RECENCY_BOOST
+                    hits.append(
+                        SearchHit(
+                            note_row["id"], "note", note_row["kind"], note_row["text"],
+                            bool(note_row["pinned"]), score,
+                        )
+                    )
+                else:
+                    summary_row = self._db().execute(
+                        "SELECT * FROM summaries WHERE id = ?", (row["id"],)
+                    ).fetchone()
+                    if summary_row is None:
+                        continue
+                    hits.append(
+                        SearchHit(summary_row["id"], "summary", "summary", summary_row["text"],
+                                  False, float(row["rank"]))
+                    )
+            hits.sort(key=lambda hit: hit.score)
+            return hits[:limit]
+
+    # ------------------------------------------------------------------
+    # Pin management
+    # ------------------------------------------------------------------
+
+    def set_pinned(self, note_id: str, pinned: bool) -> bool:
+        with self._lock:
+            with self._db() as db:
+                cursor = db.execute(
+                    "UPDATE notes SET pinned = ? WHERE id = ? AND deleted_at IS NULL",
+                    (1 if pinned else 0, note_id),
+                )
+            return cursor.rowcount > 0
+
+    def pinned_notes(self) -> list[Note]:
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT * FROM notes WHERE deleted_at IS NULL AND pinned = 1 ORDER BY created_at"
+            ).fetchall()
+            return [_note_from_row(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Tombstoning
+    # ------------------------------------------------------------------
+
+    def tombstone_note(self, note_id: str) -> bool:
+        with self._lock:
+            note_row = self._db().execute(
+                "SELECT summarized_by FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)
+            ).fetchone()
+            if note_row is None:
+                return False
+            deleted_at = self._now()
+            summarized_by = note_row["summarized_by"]
+            with self._db() as db:
+                db.execute(
+                    "UPDATE notes SET deleted_at = ? WHERE id = ?", (deleted_at, note_id)
+                )
+                db.execute("DELETE FROM memory_fts WHERE id = ?", (note_id,))
+                # Walk up the ancestor chain marking each summary stale.
+                current_id = summarized_by
+                while current_id is not None:
+                    db.execute("UPDATE summaries SET stale = 1 WHERE id = ?", (current_id,))
+                    parent_row = db.execute(
+                        "SELECT parent_id FROM summaries WHERE id = ?", (current_id,)
+                    ).fetchone()
+                    current_id = parent_row["parent_id"] if parent_row is not None else None
+            return True
+
+    # ------------------------------------------------------------------
+    # Summary queries
+    # ------------------------------------------------------------------
+
+    def root_summary(self) -> Summary | None:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT * FROM summaries WHERE parent_id IS NULL ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            return None if row is None else _summary_from_row(row)
+
+    def get_summary(self, summary_id: str) -> Summary | None:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT * FROM summaries WHERE id = ?", (summary_id,)
+            ).fetchone()
+            return None if row is None else _summary_from_row(row)
+
+    def children_of(self, summary_id: str) -> list[Summary]:
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT * FROM summaries WHERE parent_id = ? ORDER BY created_at", (summary_id,)
+            ).fetchall()
+            return [_summary_from_row(r) for r in rows]
+
+    def notes_covered_by(self, summary_id: str) -> list[Note]:
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT * FROM notes WHERE summarized_by = ? AND deleted_at IS NULL ORDER BY created_at",
+                (summary_id,),
+            ).fetchall()
+            return [_note_from_row(r) for r in rows]
+
+    def unconsolidated_notes(self, limit: int) -> list[Note]:
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT * FROM notes WHERE summarized_by IS NULL AND deleted_at IS NULL "
+                "ORDER BY created_at LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [_note_from_row(r) for r in rows]
+
+    def count_unconsolidated(self) -> int:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT COUNT(*) FROM notes WHERE summarized_by IS NULL AND deleted_at IS NULL"
+            ).fetchone()
+            return row[0]
+
+    def count_stale(self) -> int:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT COUNT(*) FROM summaries WHERE stale = 1"
+            ).fetchone()
+            return row[0]
+
+    def count_notes(self) -> int:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL"
+            ).fetchone()
+            return row[0]
+
+    def stale_summaries(self) -> list[Summary]:
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT * FROM summaries WHERE stale = 1 ORDER BY level ASC, created_at ASC"
+            ).fetchall()
+            return [_summary_from_row(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Summary writes
+    # ------------------------------------------------------------------
+
+    def insert_summary(
+        self,
+        parent_id: str | None,
+        level: int,
+        text: str,
+        covers_from: str,
+        covers_to: str,
+    ) -> Summary:
+        with self._lock:
+            summary_id = "sum_" + secrets.token_hex(8)
+            now = self._now()
+            with self._db() as db:
+                db.execute(
+                    "INSERT INTO summaries (id, parent_id, level, text, covers_from, covers_to, "
+                    "stale, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                    (summary_id, parent_id, level, text, covers_from, covers_to, now, now),
+                )
+                db.execute(
+                    "INSERT INTO memory_fts (id, entry_type, text) VALUES (?, 'summary', ?)",
+                    (summary_id, text),
+                )
+            return Summary(summary_id, parent_id, level, text, covers_from, covers_to, False, now, now)
+
+    def update_summary(
+        self,
+        summary_id: str,
+        text: str,
+        covers_from: str,
+        covers_to: str,
+        *,
+        level: int | None = None,
+    ) -> None:
+        with self._lock:
+            now = self._now()
+            with self._db() as db:
+                if level is not None:
+                    db.execute(
+                        "UPDATE summaries SET text=?, covers_from=?, covers_to=?, stale=0, "
+                        "updated_at=?, level=? WHERE id=?",
+                        (text, covers_from, covers_to, now, level, summary_id),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE summaries SET text=?, covers_from=?, covers_to=?, stale=0, "
+                        "updated_at=? WHERE id=?",
+                        (text, covers_from, covers_to, now, summary_id),
+                    )
+                db.execute("DELETE FROM memory_fts WHERE id = ?", (summary_id,))
+                db.execute(
+                    "INSERT INTO memory_fts (id, entry_type, text) VALUES (?, 'summary', ?)",
+                    (summary_id, text),
+                )
+
+    def set_summary_parent(self, summary_id: str, parent_id: str) -> None:
+        with self._lock:
+            now = self._now()
+            with self._db() as db:
+                db.execute(
+                    "UPDATE summaries SET parent_id = ?, updated_at = ? WHERE id = ?",
+                    (parent_id, now, summary_id),
+                )
+
+    def delete_summary(self, summary_id: str) -> None:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT parent_id FROM summaries WHERE id = ?", (summary_id,)
+            ).fetchone()
+            parent_id = row["parent_id"] if row is not None else None
+            with self._db() as db:
+                db.execute("DELETE FROM summaries WHERE id = ?", (summary_id,))
+                db.execute("DELETE FROM memory_fts WHERE id = ?", (summary_id,))
+                if parent_id is not None:
+                    db.execute("UPDATE summaries SET stale = 1 WHERE id = ?", (parent_id,))
+
+    def mark_summarized(self, note_ids: list[str], summary_id: str) -> None:
+        if not note_ids:
+            return
+        with self._lock, self._db() as db:
+            db.executemany(
+                "UPDATE notes SET summarized_by = ? WHERE id = ?",
+                [(summary_id, note_id) for note_id in note_ids],
+            )
+
 
 def _note_from_row(row: sqlite3.Row) -> Note:
     return Note(
@@ -227,3 +480,22 @@ def _note_from_row(row: sqlite3.Row) -> Note:
         pinned=bool(row["pinned"]),
         summarized_by=row["summarized_by"],
     )
+
+
+def _summary_from_row(row: sqlite3.Row) -> Summary:
+    return Summary(
+        id=row["id"],
+        parent_id=row["parent_id"],
+        level=row["level"],
+        text=row["text"],
+        covers_from=row["covers_from"],
+        covers_to=row["covers_to"],
+        stale=bool(row["stale"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _recency_cutoff(now_iso: str) -> str:
+    now = datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%S.%f+00:00").replace(tzinfo=timezone.utc)
+    return (now - timedelta(days=RECENCY_WINDOW_DAYS)).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
