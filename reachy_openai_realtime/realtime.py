@@ -1123,7 +1123,9 @@ class RealtimeRobotSession:
 
         if response_id is not None:
             self._interrupted_response_ids.add(response_id)
+        await self.tools.cancel_all()
         self._pending_tool_outputs.clear()
+        self.watchdog.disarm("tool_response")
         self.motion.stop_current(reason="barge_in")
 
         if generation_active:

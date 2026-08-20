@@ -2,8 +2,12 @@
 # ABOUTME: async dispatch, late-output flush, stale epochs, watchdog bracketing.
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
+from conftest import FakeSpeakerMedia, drive_fsm
+
+from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
@@ -28,6 +32,7 @@ class FakeStatus:
         self.events = []
         self.motions = []
         self.response_requests = 0
+        self.interruptions = 0
         self.metrics = FakeMetrics()
 
     def record_event(self, event, **fields):
@@ -39,19 +44,52 @@ class FakeStatus:
     def record_response_request(self):
         self.response_requests += 1
 
+    def record_interruption(self, audio_end_ms):
+        self.interruptions += 1
+
+
+class FakeConversationItem:
+    def __init__(self):
+        self.created = []
+        self.truncations = []
+        self.deleted = []
+
+    async def create(self, item):
+        self.created.append(item)
+
+    async def truncate(self, **kwargs):
+        self.truncations.append(kwargs)
+
+    async def delete(self, *, item_id, **kwargs):
+        self.deleted.append(item_id)
+
+
+class FakeResponse:
+    def __init__(self):
+        self.created = []
+        self.cancelled = []
+
+    async def create(self, response=None):
+        self.created.append(response)
+
+    async def cancel(self, response_id=None):
+        self.cancelled.append(response_id)
+
 
 class FakeConnection:
     def __init__(self):
-        self.items = []
-        self.responses = []
-        self.conversation = SimpleNamespace(item=SimpleNamespace(create=self._create_item))
-        self.response = SimpleNamespace(create=self._create_response)
+        self._item = FakeConversationItem()
+        self._response = FakeResponse()
+        self.conversation = SimpleNamespace(item=self._item)
+        self.response = self._response
 
-    async def _create_item(self, item):
-        self.items.append(item)
+    @property
+    def items(self):
+        return self._item.created
 
-    async def _create_response(self, response):
-        self.responses.append(response)
+    @property
+    def responses(self):
+        return self._response.created
 
 
 class FakeClock:
@@ -236,5 +274,96 @@ def test_reset_connection_state_cancels_in_flight_tools():
         await session.tools.cancel_all()
         assert session.tools.busy() is False
         assert session._pending_tool_outputs == []
+
+    asyncio.run(scenario())
+
+
+class _BargeInMotion:
+    def __init__(self):
+        self.stopped = 0
+
+    def stop_current(self, *, reason="stop"):
+        self.stopped += 1
+
+    def set_idle_enabled(self, enabled):
+        pass
+
+    def set_listening_enabled(self, enabled):
+        pass
+
+    def set_speaking_enabled(self, enabled):
+        pass
+
+
+class _BargeInMedia:
+    class _Audio:
+        def clear_player(self):
+            pass
+
+    def __init__(self):
+        self.audio = self._Audio()
+        self._recording_restarts = 0
+
+    def start_recording(self):
+        self._recording_restarts += 1
+
+
+def make_barge_in_session(clock=None):
+    """make_session extended with all fields _interrupt_assistant touches."""
+    session = make_session(clock=clock)
+    session.robot = type("Robot", (), {"media": _BargeInMedia()})()
+    session.motion = _BargeInMotion()
+    session._playback = PlaybackBuffer()
+    session._speaker = SpeakerWorker(FakeSpeakerMedia())
+    session._playback_io_lock = asyncio.Lock()
+    session._response_generation_done = False
+    session._speaker_busy_until = time.monotonic() + 5.0
+    session._current_response_id = "resp_barge"
+    session._current_audio_item_id = None
+    session._current_audio_content_index = 0
+    session._playback_started_at = None
+    session._playback_pushed_ms = 0.0
+    session._barge_in_at = None
+    drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
+    return session
+
+
+def test_barge_in_cancels_inflight_tool_and_disarms_watchdog():
+    """Regression: slow tool completes after _interrupt_assistant, leaking into _pending_tool_outputs.
+
+    Before the fix: cancel_all() was absent, so the tool task could append after
+    the clear(). Also the tool_response watchdog arm was never disarmed, causing a
+    spurious reconnect ~12s later.
+    """
+    async def scenario():
+        session = make_barge_in_session()
+        gate = asyncio.Event()
+
+        async def slow_motion(arguments):
+            await gate.wait()
+            return {"ok": True}
+
+        session.tools.register("move", slow_motion, timeout_s=10.0, category="motion")
+        await session._handle_tool_call(make_tool_event(name="move"))
+        assert session.tools.busy() is True
+        # Watchdog was armed by _handle_tool_call:
+        assert session.watchdog.expired() is None
+
+        # Barge-in fires while the tool is still blocked.
+        await session._interrupt_assistant()
+
+        # Release the gate AFTER barge-in — simulates the slow tool finishing late.
+        gate.set()
+        # Give the event loop a moment to let the cancelled task settle.
+        await asyncio.sleep(0.05)
+
+        # The tool output must NOT have leaked into pending outputs.
+        assert session._pending_tool_outputs == [], (
+            f"leaked pending outputs after barge-in: {session._pending_tool_outputs}"
+        )
+        # Executor must be idle.
+        assert session.tools.busy() is False
+        # Watchdog must be disarmed (no stranded tool_response deadline).
+        assert session.watchdog.expired() is None
 
     asyncio.run(scenario())

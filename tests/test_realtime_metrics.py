@@ -11,6 +11,7 @@ from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
+from reachy_openai_realtime.tool_executor import ToolExecutor
 
 
 def test_observe_speech_latency_records_elapsed_ms() -> None:
@@ -55,6 +56,11 @@ def test_barge_in_records_cancel_and_silence_latency() -> None:
     session.connection_epoch = 1
     session._speech_ended_at = None
     session._barge_in_at = None
+    session.tools = ToolExecutor(
+        epoch_provider=lambda: session.connection_epoch,
+        on_output=lambda inv, result, output, ms: None,
+        record_event=lambda *a, **kw: None,
+    )
 
     asyncio.run(session._interrupt_assistant())
 

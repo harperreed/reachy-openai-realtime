@@ -265,6 +265,11 @@ def test_barge_in_to_cancel_ms_not_recorded_when_generation_not_active() -> None
     session.connection_epoch = 1
     session._speech_ended_at = None
     session._barge_in_at = None
+    session.tools = ToolExecutor(
+        epoch_provider=lambda: session.connection_epoch,
+        on_output=lambda inv, result, output, ms: None,
+        record_event=lambda *a, **kw: None,
+    )
 
     asyncio.run(session._interrupt_assistant())
 

@@ -14,6 +14,7 @@ from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession, Rec
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
+from reachy_openai_realtime.tool_executor import ToolExecutor
 from reachy_openai_realtime.vad import EnergyTurnDetector
 
 
@@ -351,6 +352,11 @@ def test_barge_in_cancels_clears_and_truncates_at_played_audio() -> None:
     session._playback_pushed_ms = 4_000.0
     session._interrupted_response_ids = RecentIds()
     session.watchdog = DeadlineWatchdog()
+    session.tools = ToolExecutor(
+        epoch_provider=lambda: session.connection_epoch,
+        on_output=lambda inv, result, output, ms: None,
+        record_event=lambda *a, **kw: None,
+    )
 
     asyncio.run(session._interrupt_assistant())
 
@@ -397,6 +403,11 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session.watchdog = DeadlineWatchdog()
     session._doa_poller = None
     session._connected_at = None
+    session.tools = ToolExecutor(
+        epoch_provider=lambda: session.connection_epoch,
+        on_output=lambda inv, result, output, ms: None,
+        record_event=lambda *a, **kw: None,
+    )
 
     session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
     session._mic_ladder = AudioRecoveryLadder()
