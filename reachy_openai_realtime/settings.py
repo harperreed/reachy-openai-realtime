@@ -45,6 +45,10 @@ def events_path() -> Path:
     return config_dir() / "events.jsonl"
 
 
+def memory_db_path() -> Path:
+    return config_dir() / "memory.sqlite"
+
+
 def log_path() -> Path:
     return config_dir() / "application.log"
 

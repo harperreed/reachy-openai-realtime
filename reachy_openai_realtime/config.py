@@ -105,6 +105,14 @@ class AppConfig:
     language: str = DEFAULT_LANGUAGE
     input_rate: int = 24_000
     output_rate: int = 24_000
+    memory_enabled: bool = True
+    memory_write_policy: str = "agent"
+    memory_wake_char_budget: int = 2000
+    memory_nap_model: str = "gpt-5-mini"
+    memory_nap_min_interval_s: int = 900
+    memory_nap_chunk_size: int = 20
+    memory_nap_branching: int = 8
+    memory_nap_max_nodes: int = 10
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -113,8 +121,20 @@ class AppConfig:
             language = language_option(raw_language).code
         except ValueError:
             language = DEFAULT_LANGUAGE
+        memory_enabled = os.getenv("REACHY_OPENAI_REALTIME_MEMORY", "1").strip().lower() not in {
+            "0",
+            "false",
+            "off",
+        }
+        raw_policy = os.getenv("REACHY_OPENAI_REALTIME_MEMORY_WRITE_POLICY", cls.memory_write_policy)
+        raw_policy = raw_policy.strip().lower()
+        memory_write_policy = raw_policy if raw_policy in {"agent", "explicit"} else cls.memory_write_policy
+        memory_nap_model = os.getenv("REACHY_OPENAI_REALTIME_NAP_MODEL", cls.memory_nap_model)
         return cls(
             model=os.getenv("OPENAI_REALTIME_MODEL", cls.model),
             voice=os.getenv("OPENAI_REALTIME_VOICE", cls.voice),
             language=language,
+            memory_enabled=memory_enabled,
+            memory_write_policy=memory_write_policy,
+            memory_nap_model=memory_nap_model,
         )
