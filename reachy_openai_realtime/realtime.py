@@ -1112,7 +1112,8 @@ class RealtimeRobotSession:
         self.status.metrics.observe_ms("tool_duration_ms", duration_ms)
         if not ok:
             self.status.metrics.increment("tool_error_count")
-        self.status.record_motion(invocation.name, invocation.arguments, ok)
+        if invocation.name not in MEMORY_TOOL_NAMES:
+            self.status.record_motion(invocation.name, invocation.arguments, ok)
         self._pending_tool_outputs.append((invocation.epoch, invocation.call_id, output))
         if not self.tools.busy():
             self.watchdog.disarm("tool_response")

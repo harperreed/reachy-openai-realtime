@@ -328,6 +328,24 @@ def make_barge_in_session(clock=None):
     return session
 
 
+def test_memory_tool_skips_record_motion_but_keeps_events():
+    """Memory tool calls must not appear in status.motions (privacy), but tool.completed must still fire."""
+    async def scenario():
+        session = make_session()
+
+        async def note_handler(arguments):
+            return {"ok": True}
+
+        session.tools.register("note", note_handler, timeout_s=1.0)
+        await session._handle_tool_call(make_tool_event(name="note", arguments={"text": "secret fact"}))
+        await wait_until(lambda: session._pending_tool_outputs)
+        assert session.status.motions == [], "memory tool must not appear in motions"
+        event_names = [event for event, _ in session.status.events]
+        assert "tool.completed" in event_names, "tool.completed event must still fire"
+
+    asyncio.run(scenario())
+
+
 def test_barge_in_cancels_inflight_tool_and_disarms_watchdog():
     """Regression: slow tool completes after _interrupt_assistant, leaking into _pending_tool_outputs.
 
