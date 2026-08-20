@@ -32,6 +32,14 @@ def test_recorded_moves_instructions_prefer_recorded_over_express() -> None:
     assert "play_dance" not in emotions_only
 
 
+def test_recorded_moves_instructions_tell_model_to_offer_examples() -> None:
+    """Field report: 'reachy doesn't know what emotes or dances are available' —
+    a bare name dump is never volunteered; the model needs telling to offer some."""
+    text = recorded_moves_instructions(["happy1"], ["spin"])
+    assert "examples" in text
+    assert "never read out every name" in text
+
+
 class _StubMotion:
     """Minimal MotionManager face for _session_config: bare tools, no catalogs."""
 

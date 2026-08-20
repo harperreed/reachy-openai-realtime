@@ -68,7 +68,11 @@ def recorded_moves_instructions(emotions: list[str], dances: list[str]) -> str:
         "- When asked to show an emotion, react expressively, or dance, prefer "
         + " / ".join(recorded_tools)
         + " over express — recorded moves are full performances lasting several seconds."
-        " Announce the move with one short line; do not describe motion you did not perform."
+        " Announce the move with one short line; do not describe motion you did not perform.",
+        (
+            "- When asked what emotions or dances you can perform, say a handful of appealing"
+            " examples from the lists below — never read out every name."
+        ),
     ]
     if emotions:
         lines.append("- play_emotion accepts exactly these names: " + ", ".join(emotions))
