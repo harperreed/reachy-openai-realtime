@@ -47,36 +47,10 @@ from .session.supervisor import (
     SUPERVISOR_POLL_SECONDS,
 )
 from .session.watchdog import DeadlineWatchdog, WatchdogTimeout
+from .tool_executor import RecentIds
 from .vad import EnergyTurnDetector
 
 logger = logging.getLogger(__name__)
-
-
-class RecentIds:
-    """Bounded remembered-ID set (spec §27: interrupted response IDs must not grow forever)."""
-
-    def __init__(self, max_size: int = 32) -> None:
-        self._order: deque[str] = deque()
-        self._members: set[str] = set()
-        self._max_size = max_size
-
-    def add(self, value: str) -> None:
-        if value in self._members:
-            return
-        if len(self._order) >= self._max_size:
-            self._members.discard(self._order.popleft())
-        self._order.append(value)
-        self._members.add(value)
-
-    def __contains__(self, value: object) -> bool:
-        return value in self._members
-
-    def __len__(self) -> int:
-        return len(self._order)
-
-    def clear(self) -> None:
-        self._order.clear()
-        self._members.clear()
 
 
 class DoAPoller:
