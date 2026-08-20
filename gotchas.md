@@ -54,3 +54,18 @@
   Wireless mic pipeline. Sidecar emotion sounds are skipped for the same reason (the speaker
   belongs to the Realtime audio path). Catalog names are sanitized (`^[A-Za-z0-9 _-]{1,64}$`)
   before they enter session instructions — dataset filenames are third-party input.
+- **Two robots, one hostname.** Daytime robot `192.168.23.184`, night robot `192.168.200.128`,
+  both `pollen@` / hostname `reachy-mini` with different host keys — a "HOST IDENTIFICATION
+  CHANGED" warning between them is expected, but compare fingerprints before accepting.
+- **Daemon API sharp edges** (port 8000): `POST /api/daemon/start` requires `?wake_up=true|false`
+  (422 without it); job-status JSON embeds raw control chars — `tr -d '\000-\010\013-\037'`
+  before jq; a crashed app STAYS in the app slot serving a stale error and refusing new starts —
+  `POST /api/apps/stop-current-app` first, and always read POST response bodies.
+- **`response_cancel_not_active` is a session killer if the watchdog ignores it.** Barge-in near
+  speech end races `response.cancel` against server-side completion; the error IS the ack (no
+  active response). `_handle_cancel_race_error` disarms the `response_cancel` watchdog — without
+  it, WatchdogTimeout reconnects the whole session 3s after every late barge-in.
+- **The model does what the instructions favor, not what the tool list offers.** With express
+  described as "the" emotional reaction and recorded names given as a bare list, play_emotion
+  never fired once on hardware. Steering needs all three: enum names in the tool schema, an
+  explicit prefer-recorded instruction, and honest tool descriptions (express = subtle accent).
