@@ -16,6 +16,6 @@ code issue. Do not include the key in the report.
 - Temporary development sessions may use `OPENAI_API_KEY`, and existing legacy `.env` files may be loaded
   or migrated. See `docs/WIRELESS.md` for the supported setup paths.
 - Settings APIs report only whether a key exists; they never return its value.
-- Git ignores `.env`, `.env.*`, `*.pem`, `*.key`, `secrets.*`, and common extensionless SSH private-key
-  filenames. `.env.example` remains allowed.
+- Git ignores `.env`, `.env.*`, `*.pem`, `*.key`, `secrets.*`, and the extensionless SSH private-key names
+  `id_rsa`, `id_dsa`, `id_ecdsa`, and `id_ed25519`. `.env.example` remains allowed.
 - `scripts/check_secrets.py` runs on demand and in CI for pushes and pull requests.

@@ -69,13 +69,18 @@ After installation, open the app from the Reachy Mini dashboard and enter an `OP
 
 `marin` is one of the voices OpenAI recommends for best Realtime audio quality.
 
-`REACHY_OPENAI_REALTIME_CONFIG_DIR` overrides the persistent app configuration directory for custom or test
-installs. Otherwise the app uses `$XDG_CONFIG_HOME/reachy-mini/apps/reachy_openai_realtime`, falling back to
-`~/.config/reachy-mini/apps/reachy_openai_realtime` when `XDG_CONFIG_HOME` is unset.
+The persistent configuration directory resolves in this order: `REACHY_OPENAI_REALTIME_CONFIG_DIR`, then
+`REACHY_JAPANESE_REALTIME_CONFIG_DIR`, then
+`$XDG_CONFIG_HOME/reachy-mini/apps/reachy_openai_realtime`, then
+`~/.config/reachy-mini/apps/reachy_openai_realtime` when `XDG_CONFIG_HOME` is unset. In the paths below,
+`$CONFIG_DIR` means this resolved directory.
+
+The app stores saved settings in `$CONFIG_DIR/.env`, token counters in `$CONFIG_DIR/usage.json`, structured
+runtime events in `$CONFIG_DIR/events.jsonl`, and application logs in `$CONFIG_DIR/application.log`.
 
 ## API key security
 
-When neither `REACHY_OPENAI_REALTIME_CONFIG_DIR` nor `XDG_CONFIG_HOME` changes it, the settings UI stores
+When neither configuration-directory override is set and `XDG_CONFIG_HOME` is unset, the settings UI stores
 the key in:
 
 ```text
@@ -126,8 +131,8 @@ The common conversation path is `DISCONNECTED` → `CONNECTING` → `INITIALIZIN
 `ASSISTANT_SPEAKING` through `INTERRUPTING` to `USER_SPEAKING` or `LISTENING`.
 
 `TOOL_EXECUTION` branches from `WAITING_RESPONSE` or `ASSISTANT_SPEAKING`, then returns to
-`WAITING_RESPONSE` or `LISTENING`. `RECOVERING` and `STOPPING` can be entered from any state;
-`STOPPING` ends at `DISCONNECTED`.
+`WAITING_RESPONSE` or `LISTENING`. `RECOVERING` can be entered from every state except `STOPPING`.
+`STOPPING` can be entered from every state except itself and ends at `DISCONNECTED`.
 
 Every state transition is written to `events.jsonl` as an `fsm.transition` entry.
 
@@ -170,13 +175,14 @@ The playback buffer (`reachy_openai_realtime/audio/playback.py`) targets 200 ms 
 Runtime logs live in:
 
 ```text
-~/.config/reachy-mini/apps/reachy_openai_realtime/events.jsonl
-~/.config/reachy-mini/apps/reachy_openai_realtime/application.log
+$CONFIG_DIR/events.jsonl
+$CONFIG_DIR/application.log
 ```
 
-Both files rotate at 2–5 MB and keep two generations. OpenAI-style API keys are redacted from both files,
-and the app does not write raw microphone audio. Logs can contain diagnostic errors and assistant
-transcripts; review them before sharing.
+Both files rotate at 2–5 MB and keep two generations. New entries redact OpenAI-style API keys in both
+files; existing and rotated logs from older app versions may predate this safeguard. The app does not write
+raw microphone audio. Logs can contain diagnostic errors and assistant transcripts, so review them before
+sharing.
 
 Live metrics (connection uptime, latency percentiles, queue depths, reconnect counts) are available at `/api/status` and the full diagnostics breakdown at `/api/diagnostics`.
 

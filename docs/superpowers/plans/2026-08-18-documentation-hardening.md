@@ -40,7 +40,7 @@
 - Produces: `RedactingFormatter(logging.Formatter)` and the unchanged
   `attach_file_logging() -> RotatingFileHandler` interface
 
-- [ ] **Step 1: Add the failing regression test**
+- [x] **Step 1: Add the failing regression test**
 
 Append this test to `tests/test_main_logging.py`:
 
@@ -86,7 +86,7 @@ def test_attach_file_logging_redacts_exception_keys(monkeypatch, tmp_path) -> No
         handler.close()
 ```
 
-- [ ] **Step 2: Run the test and verify the red state**
+- [x] **Step 2: Run the test and verify the red state**
 
 Run:
 
@@ -99,7 +99,7 @@ uv run pytest \
 
 Expected: both tests FAIL because each original key appears in `application.log`.
 
-- [ ] **Step 3: Add the minimal formatter**
+- [x] **Step 3: Add the minimal formatter**
 
 Change the event import in `reachy_openai_realtime/main.py`:
 
@@ -125,7 +125,7 @@ handler.setFormatter(
 )
 ```
 
-- [ ] **Step 4: Run focused tests and Ruff**
+- [x] **Step 4: Run focused tests and Ruff**
 
 Run:
 
@@ -136,7 +136,7 @@ uv run ruff check reachy_openai_realtime/main.py tests/test_main_logging.py
 
 Expected: both commands exit 0; the three application-log tests and event-redaction tests pass.
 
-- [ ] **Step 5: Commit the redaction change**
+- [x] **Step 5: Commit the redaction change**
 
 ```bash
 git add reachy_openai_realtime/main.py tests/test_main_logging.py
@@ -153,7 +153,7 @@ git commit -m "fix: redact API keys from application logs"
 - Consumes: GitHub REST endpoint `/repos/{owner}/{repo}/private-vulnerability-reporting`
 - Produces: exact documentation of the disabled setting and safe public coordination instructions
 
-- [ ] **Step 1: Confirm the current hosted setting**
+- [x] **Step 1: Confirm the current hosted setting**
 
 Run:
 
@@ -163,12 +163,13 @@ gh api repos/tinjyuu/reachy-openai-realtime/private-vulnerability-reporting
 
 Expected: `{"enabled":false}`.
 
-- [ ] **Step 2: Confirm that no mutation is authorized or possible**
+- [x] **Step 2: Confirm that no mutation was authorized or made**
 
-Read `.superpowers/sdd/task-2-report.md`. It records the failed administrator-only PUT, the unchanged
-`{"enabled":false}` state, and the active account's `admin=false` permission. Do not repeat the PUT.
+Read `.superpowers/sdd/task-2-report.md`. It records the earlier failed administrator-only PUT, the unchanged
+`{"enabled":false}` state, and the active account's `admin=false` permission. No hosted mutation was made;
+the setting remains disabled and the documented fallback explains that limitation. Do not repeat the PUT.
 
-- [ ] **Step 3: Reverify the hosted setting**
+- [x] **Step 3: Reverify the hosted setting**
 
 Run:
 
@@ -178,7 +179,7 @@ gh api repos/tinjyuu/reachy-openai-realtime/private-vulnerability-reporting
 
 Expected: `{"enabled":false}`.
 
-- [ ] **Step 4: Expand exact Git ignore rules**
+- [x] **Step 4: Expand exact Git ignore rules**
 
 Add below the existing `*.key` rule in `.gitignore`:
 
@@ -197,7 +198,7 @@ git check-ignore --no-index id_rsa id_dsa id_ecdsa id_ed25519
 
 Expected: all four names are printed and the command exits 0.
 
-- [ ] **Step 5: Replace `SECURITY.md` with exact policy text**
+- [x] **Step 5: Replace `SECURITY.md` with exact policy text**
 
 Keep the existing headings and use this content:
 
@@ -225,7 +226,7 @@ code issue. Do not include the key in the report.
 - `scripts/check_secrets.py` runs on demand and in CI for pushes and pull requests.
 ```
 
-- [ ] **Step 6: Run security checks**
+- [x] **Step 6: Run security checks**
 
 Run:
 
@@ -236,7 +237,7 @@ git diff --check
 
 Expected: the secret scan passes and the diff has no whitespace errors.
 
-- [ ] **Step 7: Commit repository security documentation**
+- [x] **Step 7: Commit repository security documentation**
 
 ```bash
 git add .gitignore SECURITY.md
@@ -253,7 +254,7 @@ git commit -m "docs: document credential safeguards"
 - Consumes: current behavior in `config.py`, `session/fsm.py`, `settings.py`, `main.py`, and `static/i18n.js`
 - Produces: user-facing instructions that distinguish guarantees from manual acceptance checks
 
-- [ ] **Step 1: Narrow localization claims in `README.md`**
+- [x] **Step 1: Narrow localization claims in `README.md`**
 
 Replace the feature bullet with:
 
@@ -270,7 +271,7 @@ changes from the next response. The app supplies the selected language through R
 response instructions, following OpenAI's documented session configuration flow.
 ```
 
-- [ ] **Step 2: Document the actual configuration paths in `README.md`**
+- [x] **Step 2: Document the actual configuration paths in `README.md`**
 
 After the configuration table, add:
 
@@ -289,7 +290,7 @@ and diagnostics APIs never return the saved value. For temporary development, th
 the former `reachy_japanese_realtime` app.
 ```
 
-- [ ] **Step 3: Replace the FSM description in `README.md`**
+- [x] **Step 3: Replace the FSM description in `README.md`**
 
 Use this text:
 
@@ -303,7 +304,7 @@ The common conversation path is `DISCONNECTED` → `CONNECTING` → `INITIALIZIN
 `STOPPING` ends at `DISCONNECTED`.
 ```
 
-- [ ] **Step 4: Correct the log privacy text in `README.md`**
+- [x] **Step 4: Correct the log privacy text in `README.md`**
 
 Replace the observability claim with:
 
@@ -313,7 +314,7 @@ and the app does not write raw microphone audio. Logs can contain diagnostic err
 transcripts; review them before sharing.
 ```
 
-- [ ] **Step 5: Add Wireless prerequisites and qualify acceptance checks**
+- [x] **Step 5: Add Wireless prerequisites and qualify acceptance checks**
 
 After the `docs/WIRELESS.md` title, add:
 
@@ -342,7 +343,7 @@ Replace checklist items 4 and 6 with:
    changes it.
 ```
 
-- [ ] **Step 6: Review only the changed claims against source**
+- [x] **Step 6: Review only the changed claims against source**
 
 Run:
 
@@ -357,7 +358,7 @@ git diff --check
 Expected: the first search returns no stale claims; the second shows each replacement's implementation or
 hosted-setting reference; the diff check exits 0.
 
-- [ ] **Step 7: Commit corrected user documentation**
+- [x] **Step 7: Commit corrected user documentation**
 
 ```bash
 git add README.md docs/WIRELESS.md
@@ -373,7 +374,7 @@ git commit -m "docs: align user guides with runtime behavior"
 - Consumes: all earlier task outputs
 - Produces: a verified, clean documentation-hardening branch
 
-- [ ] **Step 1: Run the canonical repository checks**
+- [x] **Step 1: Run the canonical repository checks**
 
 ```bash
 uv run python scripts/check_secrets.py
@@ -385,7 +386,7 @@ uv run reachy-mini-app-assistant check .
 Expected: secret scan passes, Ruff reports no errors, all tests pass, and the Reachy app check reports that
 the app passed all checks.
 
-- [ ] **Step 2: Recheck hosted state and policy wording**
+- [x] **Step 2: Recheck hosted state and policy wording**
 
 ```bash
 gh api repos/tinjyuu/reachy-openai-realtime/private-vulnerability-reporting
@@ -394,7 +395,7 @@ rg -n "not currently configured|no vulnerability details" SECURITY.md
 
 Expected: `{"enabled":false}` and both safe-reporting phrases in `SECURITY.md`.
 
-- [ ] **Step 3: Perform a focused re-audit**
+- [x] **Step 3: Perform a focused re-audit**
 
 Check each of the eight false-claim rows in `docs/audits/AUDIT_REPORT_2026-08-18.md` against the changed docs
 and code. Confirm:
@@ -410,7 +411,7 @@ SECURITY.md:16 exact ignored patterns are named
 SECURITY.md:17 CI triggers are named without claiming a release gate
 ```
 
-- [ ] **Step 4: Run final repository-state checks**
+- [x] **Step 4: Run final repository-state checks**
 
 ```bash
 git diff --check
