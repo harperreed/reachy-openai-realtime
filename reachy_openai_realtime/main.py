@@ -16,6 +16,9 @@ from reachy_mini import ReachyMini, ReachyMiniApp
 from .audio.capture import AudioPipelineStalled
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
+from .memory.manager import MemoryManager
+from .memory.nap import NapConsolidator, build_openai_summarizer
+from .memory.store import MemoryStore
 from .motion import DANCES_DATASET, EMOTIONS_DATASET, MotionManager, RecordedMoveCatalog
 from .observability.events import EventRecorder, RedactingFormatter
 from .realtime import RealtimeRobotSession
@@ -26,6 +29,7 @@ from .settings import (
     events_path,
     load_instance_env,
     log_path,
+    memory_db_path,
     prepare_config_dir,
     remove_api_key,
     save_api_key,
@@ -358,6 +362,24 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
         warmup_remaining = 1.0 - (time.monotonic() - audio_started_at)
         if warmup_remaining > 0:
             time.sleep(warmup_remaining)
+        boot_config = AppConfig.from_env()
+        memory_manager: MemoryManager | None = None
+        nap: NapConsolidator | None = None
+        if boot_config.memory_enabled:
+            memory_store = MemoryStore(memory_db_path())
+            memory_manager = MemoryManager(
+                memory_store,
+                recorder=self.runtime_status.record_event,
+                zoom_child_cap=boot_config.memory_nap_branching,
+            )
+            memory_manager.open_async()  # session connect never waits on the DB (spec §11)
+            nap = NapConsolidator(
+                store=memory_store,
+                summarize=build_openai_summarizer(boot_config.memory_nap_model),
+                config=boot_config,
+                recorder=self.runtime_status.record_event,
+            )
+        self.memory_manager = memory_manager
         budget = RestartBudget()
         try:
             while not stop_event.is_set():
@@ -370,6 +392,8 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     language_provider=self._current_language,
                     camera_enabled=self._is_camera_enabled,
                     capture_camera_jpeg=self._capture_camera_frame,
+                    memory=memory_manager,
+                    nap=nap,
                 )
                 try:
                     outcome = asyncio.run(session.run(stop_event))

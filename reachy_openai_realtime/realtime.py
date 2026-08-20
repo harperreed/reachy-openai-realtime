@@ -38,6 +38,14 @@ from .dsp import (
     resample_linear,
     select_mono_float32,
 )
+from .memory.manager import MemoryManager
+from .memory.nap import NAP_IDLE_SECONDS, NapConsolidator
+from .memory.tools import (
+    MEMORY_TOOL_NAMES,
+    dispatch_memory_tool,
+    memory_instructions,
+    memory_tool_definitions,
+)
 from .motion import MotionManager
 from .runtime_status import RuntimeStatus, safe_message
 from .session.fsm import SessionState, SessionStateMachine
@@ -48,6 +56,7 @@ from .session.supervisor import (
 )
 from .session.watchdog import DeadlineWatchdog, WatchdogTimeout
 from .tool_executor import (
+    DEFAULT_TOOL_TIMEOUT_S,
     MOTION_TOOL_TIMEOUT_S,
     TOOL_WATCHDOG_GRACE_S,
     RecentIds,
@@ -131,6 +140,8 @@ class RealtimeRobotSession:
         language_provider: Callable[[], str] | None = None,
         camera_enabled: Callable[[], bool] | None = None,
         capture_camera_jpeg: Callable[[], bytes | None] | None = None,
+        memory: MemoryManager | None = None,
+        nap: NapConsolidator | None = None,
     ) -> None:
         self.robot = robot
         self.motion = motion
@@ -170,6 +181,18 @@ class RealtimeRobotSession:
             record_event=self.status.record_event,
         )
         self._register_motion_tools()
+        self.memory = memory
+        self.nap = nap
+        self._wake_block = ""
+        self._memory_tools_active = False
+        if self.memory is not None:
+            for tool_name in MEMORY_TOOL_NAMES:
+                self.tools.register(
+                    tool_name,
+                    self._memory_tool_handler(tool_name),
+                    timeout_s=DEFAULT_TOOL_TIMEOUT_S,
+                    category="memory",
+                )
         self._last_fsm_transition_at = time.monotonic()
         self._mic_ladder = AudioRecoveryLadder()
         self._capture: CaptureWorker | None = None
@@ -271,6 +294,15 @@ class RealtimeRobotSession:
             self._pending_camera_items.clear()
             self._camera_add_events.clear()
             self._camera_delete_events.clear()
+            self._wake_block = ""
+            self._memory_tools_active = False
+            if self.memory is not None and self.memory.healthy() and self.config.memory_enabled:
+                try:
+                    self._wake_block = await self.memory.wake_block(self.config.memory_wake_char_budget)
+                    self._memory_tools_active = True
+                except Exception:
+                    # Unhealthy mid-read: skip silently, voice is unaffected (spec §11).
+                    logger.debug("wake block unavailable", exc_info=True)
             self.watchdog.arm("session_update")
             await connection.session.update(session=self._session_config())
             logger.info("Realtime session connected: model=%s voice=%s", self.config.model, self.config.voice)
@@ -287,6 +319,8 @@ class RealtimeRobotSession:
                 asyncio.create_task(self._watchdog_loop(), name="watchdog-loop"),
                 asyncio.create_task(self._supervisor_loop(), name="supervisor-loop"),
             ]
+            if self.nap is not None and self._memory_tools_active:
+                tasks.append(asyncio.create_task(self.nap.run(self._nap_idle), name="nap-loop"))
             try:
                 await asyncio.gather(*tasks)
             finally:
@@ -313,10 +347,22 @@ class RealtimeRobotSession:
 
     def _session_config(self) -> RealtimeSessionCreateRequestParam:
         pcm24: Any = {"type": "audio/pcm", "rate": 24_000}
+        language = self._current_language()
+        emotions = self.motion.emotion_names()
+        dances = self.motion.dance_names()
+        instructions = session_instructions(language) + recorded_moves_instructions(emotions, dances)
+        memory_active = getattr(self, "_memory_tools_active", False)
+        wake_block = getattr(self, "_wake_block", "")
+        if memory_active:
+            instructions += memory_instructions(self.config.memory_write_policy)
+        if wake_block:
+            instructions = wake_block + "\n\n" + instructions
+        tools = self.motion.tool_definitions()
+        if memory_active:
+            tools = tools + memory_tool_definitions()
         return RealtimeSessionCreateRequestParam(
             type="realtime",
-            instructions=session_instructions(self._current_language())
-            + recorded_moves_instructions(self.motion.emotion_names(), self.motion.dance_names()),
+            instructions=instructions,
             audio=RealtimeAudioConfigParam(
                 input=RealtimeAudioConfigInputParam(
                     format=pcm24,
@@ -328,7 +374,7 @@ class RealtimeRobotSession:
                     voice=self.config.voice,
                 ),
             ),
-            tools=self.motion.tool_definitions(),  # type: ignore[arg-type]
+            tools=tools,  # type: ignore[arg-type]
             tool_choice="auto",
             output_modalities=["audio"],
             parallel_tool_calls=False,
@@ -1022,6 +1068,12 @@ class RealtimeRobotSession:
 
         return handle
 
+    def _memory_tool_handler(self, name: str):
+        async def handle(arguments: dict[str, Any]) -> dict[str, Any]:
+            return await dispatch_memory_tool(self.memory, name, arguments)
+
+        return handle
+
     async def _handle_tool_call(self, event: Any) -> None:
         call_id = str(event.call_id)
         name = str(event.name)
@@ -1204,6 +1256,12 @@ class RealtimeRobotSession:
                     check="fsm_inactivity", state=state.name, age_seconds=round(age, 1),
                 )
                 raise WatchdogTimeout("fsm_inactivity", FSM_INACTIVITY_LIMIT_SECONDS)
+
+    def _nap_idle(self) -> bool:
+        return (
+            self.fsm.state is SessionState.LISTENING
+            and time.monotonic() - self._last_fsm_transition_at >= NAP_IDLE_SECONDS
+        )
 
     async def reset_connection_state(self) -> None:
         """Spec §4: a reconnect must never inherit partially active response state."""
