@@ -17,6 +17,8 @@ from .builtin import IdleBreathingMotion, ListeningNodMotion, SpeakingMotion
 
 logger = logging.getLogger(__name__)
 
+RECORDED_MOVE_TICK_HZ = 50.0  # own playback loop; bounded WS rate, above the 30 Hz ambient tick
+
 Direction = Literal["front", "left", "right", "up", "down"]
 Emotion = Literal["neutral", "happy", "curious", "surprised", "sad"]
 
@@ -158,6 +160,46 @@ class MotionManager:
         if result["ok"]:
             result["arguments"] = command.arguments
         return result
+
+    def play_recorded(self, kind: str, name: str, move: Any) -> dict[str, Any]:
+        if kind not in {"emotion", "dance"}:
+            raise ValueError(f"unknown recorded-move kind: {kind}")
+        priority = MotionPriority.EMOTION if kind == "emotion" else MotionPriority.DANCE
+        result = self._start_activity(name, priority, lambda: self._run_recorded(move), kind=kind)
+        if result.get("ok"):
+            result["motion"] = f"play_{kind}"
+            result[kind] = name
+            result["duration_s"] = round(float(move.duration), 1)
+        return result
+
+    def _run_recorded(self, move: Any) -> None:
+        tick = 1.0 / RECORDED_MOVE_TICK_HZ
+        try:
+            head, antennas, body_yaw = move.evaluate(0.0)
+        except Exception:
+            logger.exception("Recorded move failed to evaluate its first frame")
+            return
+        try:
+            self.robot.goto_target(head=head, antennas=antennas, duration=0.4, body_yaw=body_yaw)
+        except Exception:
+            logger.debug("Initial goto for recorded move failed", exc_info=True)
+        started = time.monotonic()
+        duration = float(move.duration)
+        while not self._cancel_event.is_set() and not self._stop_event.is_set():
+            elapsed = time.monotonic() - started
+            if elapsed >= duration:
+                break
+            t = min(elapsed, duration - 1e-2)  # SDK evaluate() raises at/after the last timestamp
+            try:
+                head, antennas, body_yaw = move.evaluate(t)
+            except Exception:
+                logger.exception("Recorded move evaluation failed mid-play")
+                return
+            try:
+                self.robot.set_target(head=head, antennas=antennas, body_yaw=body_yaw)
+            except Exception:
+                logger.debug("Recorded move set_target failed", exc_info=True)
+            time.sleep(tick)
 
     def set_listening_enabled(self, enabled: bool) -> None:
         """Run one restrained nod when human speech starts."""
