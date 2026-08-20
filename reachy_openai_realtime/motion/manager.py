@@ -1,12 +1,13 @@
-# ABOUTME: Motion arbitration manager — validates, queues, and executes robot
-# ABOUTME: motion commands while running ambient generators in a worker thread.
+# ABOUTME: Motion arbitration manager — validates, schedules, and executes robot
+# ABOUTME: motion commands with priority preemption and ambient generators in a worker thread.
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any, Literal, Protocol
 
 import numpy as np
@@ -47,10 +48,37 @@ class MotionCommand:
     arguments: dict[str, Any]
 
 
+class MotionPriority(IntEnum):
+    """Spec §12 arbitration table. Higher preempts lower; 50 is reserved for look_at_speaker (Phase 3)."""
+
+    STOP = 100
+    BARGE_IN = 90
+    GESTURE = 75
+    EMOTION = 70
+    DANCE = 65
+    LOOK = 45
+    SPEAKING = 20
+    LISTENING = 15
+    IDLE = 10
+
+
+@dataclass
+class _Activity:
+    name: str
+    priority: int
+    run: Callable[[], None]
+    kind: str = "motion"  # "motion" | "emotion" | "dance" — selects the §18 event family
+
+
 class MotionManager:
     def __init__(self, robot: ReachyMotionAPI) -> None:
         self.robot = robot
-        self._queue: queue.Queue[MotionCommand | None] = queue.Queue(maxsize=8)
+        self._slot_lock = threading.Lock()
+        self._slot_cv = threading.Condition(self._slot_lock)
+        self._pending: _Activity | None = None
+        self._current: _Activity | None = None
+        self._record: Callable[..., None] | None = None
+        self._cancel_reason: str = "stop"
         self._stop_event = threading.Event()
         self._cancel_event = threading.Event()
         self._idle_enabled = threading.Event()
@@ -73,19 +101,48 @@ class MotionManager:
         self._get_base_head()
         self._thread.start()
 
+    def attach_recorder(self, record: Callable[..., None]) -> None:
+        self._record = record
+
+    def _emit(self, event: str, **fields: Any) -> None:
+        if self._record is None:
+            return
+        try:
+            self._record(event, **fields)
+        except Exception:
+            logger.debug("motion event emission failed", exc_info=True)
+
+    def _start_activity(
+        self, name: str, priority: int, run: Callable[[], None], kind: str = "motion"
+    ) -> dict[str, Any]:
+        # Check-and-set under ONE lock hold — a split check/act races the worker clearing _current.
+        with self._slot_cv:
+            blocking = max(
+                (a for a in (self._current, self._pending) if a is not None),
+                key=lambda a: a.priority,
+                default=None,
+            )
+            if blocking is not None and priority < blocking.priority:
+                return {"ok": False, "error": f"busy: {blocking.name} is active at priority {blocking.priority}"}
+            if self._current is not None:
+                self._cancel_reason = "preempted"
+                self._cancel_event.set()
+            self._pending = _Activity(name, priority, run, kind)
+            self._slot_cv.notify()
+        return {"ok": True, "motion": name}
+
     def submit(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        self.set_listening_enabled(False)
-        self.set_speaking_enabled(False)
-        self.set_idle_enabled(False)
         command = self.validate(name, arguments)
         if name == "stop_motion":
-            self.stop_current()
-            return {"ok": True, "motion": name}
-        try:
-            self._queue.put_nowait(command)
-        except queue.Full:
-            return {"ok": False, "error": "motion queue is full"}
-        return {"ok": True, "motion": name, "arguments": command.arguments}
+            self.stop_current(reason="stop")
+            return {"ok": True, "motion": "stop_motion"}
+        if name == "look":
+            return self._start_activity("look", MotionPriority.LOOK, lambda: self._execute(command))
+        # nod / shake_head / express
+        result = self._start_activity(name, MotionPriority.GESTURE, lambda: self._execute(command))
+        if result["ok"]:
+            result["arguments"] = command.arguments
+        return result
 
     def set_listening_enabled(self, enabled: bool) -> None:
         """Run one restrained nod when human speech starts."""
@@ -143,32 +200,53 @@ class MotionManager:
             return MotionCommand(name, {})
         raise ValueError(f"unknown motion tool: {name}")
 
-    def stop_current(self) -> None:
+    def stop_current(self, reason: str = "stop") -> None:
         self.set_idle_enabled(False)
         self._listening_enabled.clear()
         self._speaking_enabled.clear()
+        self._cancel_reason = reason
         self._cancel_event.set()
-        while True:
-            try:
-                self._queue.get_nowait()
-                self._queue.task_done()
-            except queue.Empty:
-                break
+        with self._slot_cv:
+            self._pending = None
+            self._slot_cv.notify()
         # ReachyMini.cancel_move() also calls media.stop_playing(). On Wireless,
         # capture and playback share one GStreamer pipeline, so that method also
-        # stops the microphone. The local cancel flag and queue drain are the
+        # stops the microphone. The local cancel flag and pending slot clear are the
         # safe way to stop motions owned by this controller.
 
     def close(self) -> None:
         self.set_idle_enabled(False)
         self._stop_event.set()
-        self.stop_current()
-        try:
-            self._queue.put_nowait(None)
-        except queue.Full:
-            pass
-        self._thread.join(timeout=2.0)
+        self.stop_current(reason="shutdown")
+        with self._slot_cv:
+            self._slot_cv.notify()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
         self._goto_absolute(0, 0, [0, 0], 0.7)
+
+    def _has_foreground(self) -> bool:
+        with self._slot_lock:
+            return self._current is not None or self._pending is not None
+
+    def _reset_ambient_generators(self) -> None:
+        self._idle_motion = None
+        self._idle_started_at = None
+        self._listening_motion = None
+        self._listening_started_at = None
+        self._listening_was_moving = None
+        self._speaking_motion = None
+        self._speaking_started_at = None
+
+    def _return_to_base(self) -> None:
+        try:
+            self.robot.goto_target(
+                head=self._get_base_head(),
+                antennas=np.deg2rad([-10.0, 10.0]),
+                duration=0.4,
+                body_yaw=None,
+            )
+        except Exception:
+            logger.debug("Could not return to base head", exc_info=True)
 
     def _get_base_head(self) -> np.ndarray:
         if self._base_head is None:
@@ -189,29 +267,38 @@ class MotionManager:
 
     def _worker(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                command = self._queue.get(timeout=self._idle_period)
-            except queue.Empty:
-                self._update_ambient_motion()
+            with self._slot_cv:
+                if self._pending is None:
+                    self._slot_cv.wait(timeout=self._idle_period)
+                activity, self._pending = self._pending, None
+                if activity is not None:
+                    self._current = activity
+            if activity is None:
+                if not self._has_foreground():
+                    self._update_ambient_motion()
                 continue
-            if command is None:
-                self._queue.task_done()
-                return
-            self._idle_motion = None
-            self._idle_started_at = None
-            self._listening_motion = None
-            self._listening_started_at = None
-            self._listening_was_moving = None
-            self._speaking_motion = None
-            self._speaking_started_at = None
+            self._reset_ambient_generators()
             self._cancel_event.clear()
+            self._cancel_reason = "stop"
+            started_at = time.monotonic()
+            family = activity.kind  # "motion" | "emotion" | "dance"
+            label_key = {"motion": "motion", "emotion": "emotion", "dance": "dance"}[family]
+            self._emit(f"{family}.started", **{label_key: activity.name, "priority": activity.priority})
             try:
-                self._execute(command)
+                activity.run()
             except Exception:
-                logger.exception("Motion failed: %s", command.name)
-            finally:
-                self._last_activity_at = time.monotonic()
-                self._queue.task_done()
+                logger.exception("Motion failed: %s", activity.name)
+            duration_ms = round((time.monotonic() - started_at) * 1000.0, 1)
+            if self._cancel_event.is_set():
+                self._emit("motion.cancelled", motion=activity.name, reason=self._cancel_reason)
+            else:
+                self._emit(f"{family}.completed", **{label_key: activity.name, "duration_ms": duration_ms})
+            with self._slot_lock:
+                self._current = None
+                has_pending = self._pending is not None
+            if not has_pending:
+                self._return_to_base()  # a preempting activity is about to move anyway — skip the detour
+            self._last_activity_at = time.monotonic()
 
     def _update_ambient_motion(self) -> None:
         if self._listening_enabled.is_set():
