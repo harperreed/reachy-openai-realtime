@@ -47,7 +47,13 @@ from .session.supervisor import (
     SUPERVISOR_POLL_SECONDS,
 )
 from .session.watchdog import DeadlineWatchdog, WatchdogTimeout
-from .tool_executor import RecentIds
+from .tool_executor import (
+    MOTION_TOOL_TIMEOUT_S,
+    TOOL_WATCHDOG_GRACE_S,
+    RecentIds,
+    ToolExecutor,
+    ToolInvocation,
+)
 from .vad import EnergyTurnDetector
 
 logger = logging.getLogger(__name__)
@@ -158,6 +164,12 @@ class RealtimeRobotSession:
         self._doa_poller: DoAPoller | None = None
         self._vad = EnergyTurnDetector()
         self.watchdog = DeadlineWatchdog()
+        self.tools = ToolExecutor(
+            epoch_provider=lambda: self.connection_epoch,
+            on_output=self._finish_tool_call,
+            record_event=self.status.record_event,
+        )
+        self._register_motion_tools()
         self._last_fsm_transition_at = time.monotonic()
         self._mic_ladder = AudioRecoveryLadder()
         self._capture: CaptureWorker | None = None
@@ -248,6 +260,7 @@ class RealtimeRobotSession:
             await asyncio.sleep(min(0.2, remaining))
 
     async def _run_connection(self, stop_event: Any) -> None:
+        self._register_motion_tools()
         async with self.client.realtime.connect(model=self.config.model) as connection:
             self.connection = connection
             # _connected_at marks attempt start (includes DNS/TLS/handshake); difference vs
@@ -942,9 +955,10 @@ class RealtimeRobotSession:
                         )
                 else:
                     has_tool_outputs = bool(self._pending_tool_outputs)
-                    if has_tool_outputs:
+                    if has_tool_outputs or self.tools.busy():
                         self.fsm.transition(SessionState.TOOL_EXECUTION, reason="tool_outputs_pending")
-                        await self._flush_tool_outputs()
+                        if has_tool_outputs:
+                            await self._flush_tool_outputs()
                     else:
                         now = time.monotonic()
                         # At response.done, generation is finished by definition.
@@ -987,27 +1001,76 @@ class RealtimeRobotSession:
                 logger.error("Realtime API error: %s", error)
                 self.status.record_error(safe_message(getattr(error, "message", error)))
 
+    def _register_motion_tools(self) -> None:
+        # Idempotent: register() overwrites. Re-run at connection start so tools
+        # from catalogs that finished loading after __init__ (play_emotion,
+        # play_dance) are registered, matching _session_config's fresh
+        # tool_definitions() call.
+        for definition in self.motion.tool_definitions():
+            name = str(definition.get("name", ""))
+            if name:
+                self.tools.register(
+                    name,
+                    self._motion_tool_handler(name),
+                    timeout_s=MOTION_TOOL_TIMEOUT_S,
+                    category="motion",
+                )
+
+    def _motion_tool_handler(self, name: str):
+        async def handle(arguments: dict[str, Any]) -> dict[str, Any]:
+            return await asyncio.to_thread(self.motion.submit, name, arguments)
+
+        return handle
+
     async def _handle_tool_call(self, event: Any) -> None:
         call_id = str(event.call_id)
         name = str(event.name)
-        arguments: dict[str, Any] = {}
-        tool_start = time.monotonic()
         self.status.record_event("tool.requested", name=name, call_id=call_id)
         try:
             arguments = json.loads(event.arguments or "{}")
             if not isinstance(arguments, dict):
                 raise TypeError("モーション引数がdictではありません")
-            result = self.motion.submit(name, arguments)
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        except (TypeError, json.JSONDecodeError) as exc:
+            invocation = ToolInvocation(self.connection_epoch, call_id, name, {})
             result = {"ok": False, "error": str(exc)}
-            self.status.record_event("tool.failed", name=name, call_id=call_id, error=type(exc).__name__)
+            await self._finish_tool_call(invocation, result, json.dumps(result, ensure_ascii=False), 0.0)
+            return
+        invocation = ToolInvocation(self.connection_epoch, call_id, name, arguments)
+        # #21: the tool_response watchdog stays armed around executor dispatch.
+        # Explicit deadline: the per-tool timeout (10-15s) exceeds the 5s
+        # DEFAULT_DEADLINES entry, and a legal slow tool must not trip a reconnect.
+        self.watchdog.arm("tool_response", self.tools.timeout_for(name) + TOOL_WATCHDOG_GRACE_S)
+        accepted = await self.tools.submit(invocation)
+        if not accepted and not self.tools.busy():
+            self.watchdog.disarm("tool_response")
+
+    async def _finish_tool_call(
+        self, invocation: ToolInvocation, result: dict[str, Any], output: str, duration_ms: float
+    ) -> None:
+        ok = bool(result.get("ok"))
+        if ok:
+            self.status.record_event("tool.completed", name=invocation.name, call_id=invocation.call_id)
         else:
-            self.status.record_event("tool.completed", name=name, call_id=call_id)
-        self.status.metrics.observe_ms("tool_duration_ms", (time.monotonic() - tool_start) * 1000.0)
-        if not result.get("ok"):
+            self.status.record_event(
+                "tool.failed",
+                name=invocation.name,
+                call_id=invocation.call_id,
+                error=str(result.get("error", "unknown"))[:120],
+            )
+        self.status.metrics.observe_ms("tool_duration_ms", duration_ms)
+        if not ok:
             self.status.metrics.increment("tool_error_count")
-        self.status.record_motion(name, arguments, bool(result.get("ok")))
-        self._pending_tool_outputs.append((self.connection_epoch, call_id, json.dumps(result, ensure_ascii=False)))
+        self.status.record_motion(invocation.name, invocation.arguments, ok)
+        self._pending_tool_outputs.append((invocation.epoch, invocation.call_id, output))
+        if not self.tools.busy():
+            self.watchdog.disarm("tool_response")
+        # Late-output path: execution is async now, so completion can arrive
+        # AFTER response.done already ran. In that case nobody else will flush.
+        if self._response_generation_done and self.fsm.state in (
+            SessionState.TOOL_EXECUTION,
+            SessionState.LISTENING,
+        ):
+            await self._flush_tool_outputs()
 
     async def _flush_tool_outputs(self) -> None:
         pending, self._pending_tool_outputs = self._pending_tool_outputs, []
@@ -1155,6 +1218,7 @@ class RealtimeRobotSession:
             logger.exception("motion stop during reset failed")
         self._vad.reset_turn()
         self._pending_tool_outputs.clear()
+        await self.tools.cancel_all()
         self._interrupted_response_ids.clear()
         self._speech_ended_at = None
         self._barge_in_at = None

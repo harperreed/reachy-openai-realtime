@@ -14,6 +14,7 @@ from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog, WatchdogTimeout
+from reachy_openai_realtime.tool_executor import ToolExecutor
 from reachy_openai_realtime.vad import EnergyTurnDetector
 
 
@@ -38,6 +39,11 @@ def _build_response_done_session(connection: ScriptedConnection, response_id: st
     session._response_generation_done = False
     session._current_response_id = response_id
     session._interrupted_response_ids = RecentIds()
+    session.tools = ToolExecutor(
+        epoch_provider=lambda: session.connection_epoch,
+        on_output=session._finish_tool_call,
+        record_event=session.status.record_event,
+    )
     session._pending_tool_outputs = [(1, "call_1", '{"ok": true}')]
     session._playback = PlaybackBuffer()
     session._speaker_busy_until = time.monotonic() - 1.0
@@ -290,14 +296,22 @@ def test_response_lifecycle_events_recorded() -> None:
 
 
 class _SubmittingMotion(BargeInMotion):
-    """Extends BargeInMotion with a submit() stub so _handle_tool_call can run."""
+    """Extends BargeInMotion with a submit() stub and tool_definitions() for the executor."""
 
     def submit(self, name: str, arguments: dict) -> dict:
         return {"ok": True}
 
+    def tool_definitions(self) -> list:
+        return [{"name": "set_emotion"}]
+
 
 def test_tool_requested_and_completed_events_recorded() -> None:
-    """tool.requested and tool.completed fire when _handle_tool_call succeeds."""
+    """tool.requested and tool.completed fire when _handle_tool_call dispatches async.
+
+    After the ToolExecutor wiring, _handle_tool_call submits to the executor and
+    returns immediately; the tool runs off-loop and _finish_tool_call delivers the
+    result.  We wait until the executor is idle before asserting.
+    """
     response_id = "resp_tool"
     tool_event = realtime_event(
         "response.function_call_arguments.done",
@@ -310,8 +324,16 @@ def test_tool_requested_and_completed_events_recorded() -> None:
     connection = ScriptedConnection([tool_event], on_drained=lambda: drained.set())
 
     session = _build_response_done_session(connection, response_id=response_id)
-    session.motion = _SubmittingMotion()
+    motion = _SubmittingMotion()
+    session.motion = motion
     session._pending_tool_outputs = []
+    # Register set_emotion so the executor can dispatch it (mirrors _register_motion_tools).
+    session.tools.register(
+        "set_emotion",
+        lambda args: asyncio.to_thread(motion.submit, "set_emotion", args),
+        timeout_s=10.0,
+        category="motion",
+    )
 
     recorder = FakeRecorder()
     session.status.attach_recorder(recorder)
@@ -319,8 +341,11 @@ def test_tool_requested_and_completed_events_recorded() -> None:
     async def run_event_loop() -> None:
         task = asyncio.ensure_future(session._event_loop(FakeStopEvent()))
         await asyncio.wait_for(drained.wait(), timeout=2.0)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        # Drain async beats until the executor finishes the tool task.
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while session.tools.busy():
+            assert asyncio.get_running_loop().time() < deadline, "tool task never completed"
+            await asyncio.sleep(0.005)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

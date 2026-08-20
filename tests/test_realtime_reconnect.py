@@ -32,6 +32,9 @@ def make_session(connect_error: Exception, attempts: list[int]) -> RealtimeRobot
         def set_speaking_enabled(self, enabled: bool) -> None:
             pass
 
+        def tool_definitions(self) -> list:
+            return []
+
     class _FakeMedia:
         def get_input_audio_samplerate(self) -> int:
             return 16_000

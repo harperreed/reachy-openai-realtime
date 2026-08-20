@@ -14,6 +14,7 @@ from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
+from reachy_openai_realtime.tool_executor import ToolExecutor
 from reachy_openai_realtime.vad import EnergyTurnDetector
 
 
@@ -49,6 +50,11 @@ def make_dirty_session() -> RealtimeRobotSession:
     session._playback.push(dirty_chunk())
     session._speaker = SpeakerWorker(FakeSpeakerMedia())
     session._pending_tool_outputs = [(3, "call_1", "{}"), (2, "call_0", "{}")]
+    session.tools = ToolExecutor(
+        epoch_provider=lambda: session.connection_epoch,
+        on_output=lambda *_: None,
+        record_event=session.status.record_event,
+    )
     session._current_response_id = "resp_live"
     session._current_audio_item_id = "item_live"
     session._current_audio_content_index = 1
