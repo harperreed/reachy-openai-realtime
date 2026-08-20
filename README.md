@@ -124,10 +124,10 @@ Multiple motion requests are arbitrated by priority. An incoming request preempt
 |---|---|---|
 | 100 | STOP | `stop_motion` |
 | 90 | BARGE_IN | user interruption |
-| 75 | GESTURE | `nod`, `shake_head`, `look` |
+| 75 | GESTURE | `nod`, `shake_head`, `express` |
 | 70 | EMOTION | `play_emotion` |
 | 65 | DANCE | `play_dance` |
-| 45 | LOOK | ambient look direction |
+| 45 | LOOK | `look` |
 | 20 | SPEAKING | head/antenna motion while speaking |
 | 15 | LISTENING | listening nod |
 | 10 | IDLE | breathing idle |
