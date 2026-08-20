@@ -7,6 +7,7 @@ const languageSelect = document.getElementById("language-select");
 const i18n = window.ReachyI18n;
 let firstConfigRender = true;
 let refreshInFlight = false;
+let refreshMemoryInFlight = false;
 let cameraEnabled = false;
 let lastCameraFrameAt = 0;
 let selectedLanguage = "en";
@@ -269,20 +270,34 @@ function renderRuntime(status) {
 }
 
 async function refreshMemory() {
-  const query = document.getElementById("memory-search").value.trim();
-  const url = query ? `/api/memory?q=${encodeURIComponent(query)}` : "/api/memory";
-  const response = await fetch(url);
-  const data = await response.json();
+  if (refreshMemoryInFlight) return;
+  refreshMemoryInFlight = true;
   const list = document.getElementById("memory-list");
   const empty = document.getElementById("memory-empty");
   const unavailable = document.getElementById("memory-unavailable");
-  list.replaceChildren();
-  unavailable.hidden = data.ok !== false;
-  if (data.ok === false) return;
-  document.getElementById("memory-count").textContent = String(data.count);
-  empty.hidden = data.memories.length > 0;
-  for (const memory of data.memories) {
-    list.appendChild(renderMemoryItem(memory));
+  const count = document.getElementById("memory-count");
+  try {
+    const query = document.getElementById("memory-search").value.trim();
+    const url = query ? `/api/memory?q=${encodeURIComponent(query)}` : "/api/memory";
+    const response = await fetch(url);
+    const data = await response.json();
+    list.replaceChildren();
+    unavailable.hidden = data.ok !== false;
+    if (data.ok === false) {
+      count.textContent = "";
+      return;
+    }
+    count.textContent = String(data.count);
+    empty.hidden = data.memories.length > 0;
+    for (const memory of data.memories) {
+      list.appendChild(renderMemoryItem(memory));
+    }
+  } catch (_) {
+    list.replaceChildren();
+    count.textContent = "";
+    unavailable.hidden = false;
+  } finally {
+    refreshMemoryInFlight = false;
   }
 }
 
@@ -298,18 +313,18 @@ function renderMemoryItem(memory) {
   const pin = document.createElement("button");
   pin.textContent = memory.pinned ? "★" : "☆";
   pin.addEventListener("click", async () => {
-    await fetch(`/api/memory/${memory.id}/pin`, {
+    await fetch(`/api/memory/${encodeURIComponent(memory.id)}/pin`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pinned: !memory.pinned }),
     });
-    refreshMemory();
+    await refreshMemory();
   });
   const remove = document.createElement("button");
   remove.textContent = "✕";
   remove.addEventListener("click", async () => {
-    await fetch(`/api/memory/${memory.id}`, { method: "DELETE" });
-    refreshMemory();
+    await fetch(`/api/memory/${encodeURIComponent(memory.id)}`, { method: "DELETE" });
+    await refreshMemory();
   });
   item.append(text, meta, pin, remove);
   return item;
