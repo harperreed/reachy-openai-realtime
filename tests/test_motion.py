@@ -9,7 +9,7 @@ from reachy_mini.utils import create_head_pose
 from reachy_openai_realtime.motion import (
     IdleBreathingMotion,
     ListeningNodMotion,
-    MotionController,
+    MotionManager,
     SpeakingMotion,
 )
 
@@ -36,23 +36,23 @@ class FakeRobot:
 
 
 def test_count_is_clamped() -> None:
-    command = MotionController.validate("nod", {"count": 99})
+    command = MotionManager.validate("nod", {"count": 99})
     assert command.arguments == {"count": 3}
 
 
 def test_invalid_direction_is_rejected() -> None:
     with pytest.raises(ValueError, match="direction"):
-        MotionController.validate("look", {"direction": "behind"})
+        MotionManager.validate("look", {"direction": "behind"})
 
 
 def test_raw_angles_are_not_accepted() -> None:
     with pytest.raises(ValueError, match="unknown"):
-        MotionController.validate("set_motor_angles", {"angles": [999]})
+        MotionManager.validate("set_motor_angles", {"angles": [999]})
 
 
 def test_stop_motion_preserves_wireless_media_pipeline() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
     result = controller.submit("stop_motion", {})
     assert result["ok"] is True
     assert robot.cancelled is False
@@ -103,7 +103,7 @@ def test_idle_breathing_preserves_persistent_look_direction() -> None:
 
 def test_idle_breathing_stops_when_disabled() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
     controller._idle_start_delay = 0.0
     controller.set_idle_enabled(True)
 
@@ -155,7 +155,7 @@ def test_listening_nod_returns_to_persistent_look_direction() -> None:
 
 def test_listening_nod_runs_only_while_enabled() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
 
     controller.set_listening_enabled(True)
     controller._update_ambient_motion()
@@ -169,7 +169,7 @@ def test_listening_nod_runs_only_while_enabled() -> None:
 
 def test_listening_nod_does_not_send_motor_commands_during_quiet_window() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
     controller.set_listening_enabled(True)
     controller._listening_motion = ListeningNodMotion(
         robot.get_current_head_pose(),
@@ -228,9 +228,9 @@ def test_speaking_motion_is_composed_on_persistent_look_direction() -> None:
 
 def test_look_direction_becomes_base_for_following_motions() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
 
-    controller._execute(MotionController.validate("look", {"direction": "right"}))
+    controller._execute(MotionManager.validate("look", {"direction": "right"}))
     expected = create_head_pose(yaw=-22, degrees=True)
     np.testing.assert_allclose(controller._get_base_head(), expected)
 
@@ -248,7 +248,7 @@ def test_look_direction_becomes_base_for_following_motions() -> None:
 
 def test_speaking_motion_runs_only_while_enabled() -> None:
     robot = FakeRobot()
-    controller = MotionController(robot)
+    controller = MotionManager(robot)
 
     controller.set_speaking_enabled(True)
     controller._update_ambient_motion()

@@ -42,12 +42,12 @@ class FakeMedia:
 
 
 class FakeRobot:
-    """Minimal robot that satisfies both main.run() and MotionController's ReachyMotionAPI."""
+    """Minimal robot that satisfies both main.run() and MotionManager's ReachyMotionAPI."""
 
     def __init__(self) -> None:
         self.media = FakeMedia()
 
-    # MotionController protocol ------------------------------------------------
+    # MotionManager protocol ------------------------------------------------
 
     def get_current_head_pose(self) -> Any:
         return create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)

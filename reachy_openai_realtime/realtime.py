@@ -37,7 +37,7 @@ from .dsp import (
     resample_linear,
     select_mono_float32,
 )
-from .motion import TOOL_DEFINITIONS, MotionController
+from .motion import TOOL_DEFINITIONS, MotionManager
 from .runtime_status import RuntimeStatus, safe_message
 from .session.fsm import SessionState, SessionStateMachine
 from .session.recovery import BackoffPolicy, ErrorClass, SessionOutcome, classify_connection_error
@@ -144,7 +144,7 @@ class RealtimeRobotSession:
     def __init__(
         self,
         robot: Any,
-        motion: MotionController,
+        motion: MotionManager,
         config: AppConfig,
         status: RuntimeStatus,
         language_provider: Callable[[], str] | None = None,

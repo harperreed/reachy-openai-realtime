@@ -16,7 +16,7 @@ from reachy_mini import ReachyMini, ReachyMiniApp
 from .audio.capture import AudioPipelineStalled
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
-from .motion import MotionController
+from .motion import MotionManager
 from .observability.events import EventRecorder, RedactingFormatter
 from .realtime import RealtimeRobotSession
 from .runtime_status import RuntimeStatus
@@ -310,7 +310,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             )
             return
 
-        motion = MotionController(reachy_mini)
+        motion = MotionManager(reachy_mini)
 
         self._session_started = True
         self.runtime_status.set_phase(

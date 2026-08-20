@@ -47,7 +47,7 @@ class MotionCommand:
     arguments: dict[str, Any]
 
 
-class MotionController:
+class MotionManager:
     def __init__(self, robot: ReachyMotionAPI) -> None:
         self.robot = robot
         self._queue: queue.Queue[MotionCommand | None] = queue.Queue(maxsize=8)

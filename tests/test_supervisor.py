@@ -113,7 +113,7 @@ def test_supervisor_fires_on_fsm_inactivity(monkeypatch) -> None:
     monkeypatch.setattr(realtime_mod, "FSM_INACTIVITY_LIMIT_SECONDS", 0.05)
 
     from reachy_openai_realtime.config import AppConfig
-    from reachy_openai_realtime.motion import MotionController
+    from reachy_openai_realtime.motion import MotionManager
     from reachy_openai_realtime.realtime import RealtimeRobotSession
     from reachy_openai_realtime.runtime_status import RuntimeStatus
     from reachy_openai_realtime.usage import UsageTracker
@@ -123,7 +123,7 @@ def test_supervisor_fires_on_fsm_inactivity(monkeypatch) -> None:
     status.attach_recorder(fake_recorder)
 
     robot = _make_fake_robot()
-    motion = MotionController(robot)
+    motion = MotionManager(robot)
 
     config = AppConfig.from_env()
 
@@ -198,7 +198,7 @@ def test_supervisor_silent_when_listening(monkeypatch) -> None:
     monkeypatch.setattr(realtime_mod, "FSM_INACTIVITY_LIMIT_SECONDS", 999.0)
 
     from reachy_openai_realtime.config import AppConfig
-    from reachy_openai_realtime.motion import MotionController
+    from reachy_openai_realtime.motion import MotionManager
     from reachy_openai_realtime.realtime import RealtimeRobotSession
     from reachy_openai_realtime.runtime_status import RuntimeStatus
     from reachy_openai_realtime.session.watchdog import DEFAULT_DEADLINES
@@ -212,7 +212,7 @@ def test_supervisor_silent_when_listening(monkeypatch) -> None:
     status.attach_recorder(fake_recorder)
 
     robot = _make_fake_robot()
-    motion = MotionController(robot)
+    motion = MotionManager(robot)
     config = AppConfig.from_env()
 
     events = [realtime_event("session.updated")]
