@@ -179,3 +179,77 @@ def test_non_dict_result_becomes_structured_error():
         assert "non-dict" in result["error"]
 
     asyncio.run(scenario())
+
+
+def test_timeout_maps_to_category_error():
+    async def scenario():
+        executor, outputs, _events, _ = make_executor()
+
+        async def stuck(arguments):
+            await asyncio.sleep(10)
+            return {"ok": True}
+
+        executor.register("nod", stuck, timeout_s=0.05, category="motion")
+        await executor.submit(ToolInvocation(1, "call_t", "nod", {}))
+        await drain(executor)
+        (_, result, _, duration_ms) = outputs.outputs[0]
+        assert result == {"ok": False, "error": "motion_timeout"}
+        assert duration_ms >= 50.0
+
+    asyncio.run(scenario())
+
+
+def test_handler_exception_becomes_structured_result():
+    async def scenario():
+        executor, outputs, _events, _ = make_executor()
+
+        async def broken(arguments):
+            raise ValueError("unknown emotion: zoomies")
+
+        executor.register("play_emotion", broken, timeout_s=1.0)
+        await executor.submit(ToolInvocation(1, "call_e", "play_emotion", {}))
+        await drain(executor)
+        (_, result, _, _) = outputs.outputs[0]
+        assert result == {"ok": False, "error": "unknown emotion: zoomies"}
+
+    asyncio.run(scenario())
+
+
+def test_concurrency_is_bounded_at_two():
+    async def scenario():
+        state = {"active": 0, "peak": 0}
+
+        async def slow(arguments):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.05)
+            state["active"] -= 1
+            return {"ok": True}
+
+        executor, outputs, _events, _ = make_executor()
+        executor.register("slow", slow, timeout_s=5.0)
+        for index in range(4):
+            await executor.submit(ToolInvocation(1, f"call_{index}", "slow", {}))
+        await drain(executor)
+        assert state["peak"] <= 2
+        assert len(outputs.outputs) == 4
+
+    asyncio.run(scenario())
+
+
+def test_cancel_all_stops_in_flight_tools_without_output():
+    async def scenario():
+        executor, outputs, _events, _ = make_executor()
+
+        async def forever(arguments):
+            await asyncio.Event().wait()
+            return {"ok": True}
+
+        executor.register("forever", forever, timeout_s=60.0)
+        await executor.submit(ToolInvocation(1, "call_c", "forever", {}))
+        assert executor.busy() is True
+        await executor.cancel_all()
+        assert executor.busy() is False
+        assert outputs.outputs == []
+
+    asyncio.run(scenario())
