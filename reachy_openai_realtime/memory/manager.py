@@ -130,6 +130,28 @@ class MemoryManager:
         self._recorder("memory.deleted", memory_id=memory_id)
         return True
 
+    async def list_entries(self, query: str = "", limit: int = 50) -> tuple[list[Note], int]:
+        total = await self._run("list", self._store.count_notes)
+        if query.strip():
+            match = fts_match_expression(query)
+            hits = await self._run("list", self._store.search, match, limit) if match else []
+            notes = []
+            for hit in hits:
+                if hit.entry_type != "note":
+                    continue
+                note = await self._run("list", self._store.get_note, hit.id)
+                if note is not None:
+                    notes.append(note)
+            return notes, total
+        return await self._run("list", self._store.list_notes, limit), total
+
+    async def set_pinned(self, memory_id: str, pinned: bool) -> bool:
+        changed = await self._run("pin", self._store.set_pinned, memory_id, pinned)
+        if not changed:
+            raise UnknownMemoryIdError("unknown memory id")
+        self._recorder("memory.updated", memory_id=memory_id)
+        return True
+
     async def wake_block(self, char_budget: int) -> str:
         if not self._healthy or char_budget < len(WAKE_FRAMING) + 40:
             return ""

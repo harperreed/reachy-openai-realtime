@@ -160,3 +160,31 @@ def test_sqlite_error_marks_unhealthy_and_emits_memory_error(tmp_path):
         assert ("memory.error", {"operation": "note"}) in events.events
 
     asyncio.run(scenario())
+
+
+def test_list_entries_newest_first_with_search_and_count(tmp_path):
+    async def scenario():
+        manager, _store, _ = make_manager(tmp_path)
+        first = await manager.note("alpha fact about ukulele")
+        second = await manager.note("beta fact about accordion")
+        entries, total = await manager.list_entries()
+        assert total == 2
+        assert [entry.id for entry in entries] == [second.id, first.id]
+        filtered, total = await manager.list_entries(query="ukulele")
+        assert [entry.id for entry in filtered] == [first.id]
+        assert total == 2  # count is total live notes, not the filtered count
+
+    asyncio.run(scenario())
+
+
+def test_set_pinned_emits_updated_and_rejects_unknown(tmp_path):
+    async def scenario():
+        manager, store, events = make_manager(tmp_path)
+        note = await manager.note("pin me")
+        assert await manager.set_pinned(note.id, True) is True
+        assert store.get_note(note.id).pinned is True
+        assert events.events[-1] == ("memory.updated", {"memory_id": note.id})
+        with pytest.raises(UnknownMemoryIdError):
+            await manager.set_pinned("mem_missing", True)
+
+    asyncio.run(scenario())

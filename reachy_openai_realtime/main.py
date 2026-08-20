@@ -16,7 +16,7 @@ from reachy_mini import ReachyMini, ReachyMiniApp
 from .audio.capture import AudioPipelineStalled
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
-from .memory.manager import MemoryManager
+from .memory.manager import MemoryManager, MemoryUnavailableError, UnknownMemoryIdError
 from .memory.nap import NapConsolidator, build_openai_summarizer
 from .memory.store import MemoryStore
 from .motion import DANCES_DATASET, EMOTIONS_DATASET, MotionManager, RecordedMoveCatalog
@@ -73,6 +73,10 @@ class LanguageUpdate(BaseModel):
     language: str
 
 
+class PinUpdate(BaseModel):
+    pinned: bool
+
+
 class ReachyOpenaiRealtime(ReachyMiniApp):
     custom_app_url: str | None = "http://0.0.0.0:8042"
     request_media_backend: str | None = "default"
@@ -90,6 +94,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
         initial_config = AppConfig.from_env()
         self._language = initial_config.language
         self.runtime_status = RuntimeStatus(UsageTracker(usage_path()))
+        self.memory_manager: MemoryManager | None = None
 
         assert self.settings_app is not None
 
@@ -248,6 +253,54 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 "removed": removed,
                 "restart_required": self._session_started,
             }
+
+        @self.settings_app.get("/api/memory")
+        async def get_memory(q: str = "", limit: int = 50):
+            manager = self.memory_manager
+            if manager is None or not manager.healthy():
+                return {"ok": False, "error": "memory unavailable", "count": 0, "memories": []}
+            entries, total = await manager.list_entries(q, limit=max(1, min(int(limit), 200)))
+            return {
+                "ok": True,
+                "count": total,
+                "memories": [
+                    {
+                        "id": entry.id,
+                        "kind": entry.kind,
+                        "text": entry.text,
+                        "pinned": entry.pinned,
+                        "source": entry.source,
+                        "created_at": entry.created_at,
+                    }
+                    for entry in entries
+                ],
+            }
+
+        @self.settings_app.post("/api/memory/{memory_id}/pin")
+        async def pin_memory(memory_id: str, update: PinUpdate):
+            manager = self.memory_manager
+            if manager is None or not manager.healthy():
+                return {"ok": False, "error": "memory unavailable"}
+            try:
+                await manager.set_pinned(memory_id, update.pinned)
+            except UnknownMemoryIdError:
+                return {"ok": False, "error": "unknown memory id"}
+            except MemoryUnavailableError:
+                return {"ok": False, "error": "memory unavailable"}
+            return {"ok": True}
+
+        @self.settings_app.delete("/api/memory/{memory_id}")
+        async def delete_memory(memory_id: str):
+            manager = self.memory_manager
+            if manager is None or not manager.healthy():
+                return {"ok": False, "error": "memory unavailable"}
+            try:
+                await manager.forget(memory_id)
+            except UnknownMemoryIdError:
+                return {"ok": False, "error": "unknown memory id"}
+            except MemoryUnavailableError:
+                return {"ok": False, "error": "memory unavailable"}
+            return {"ok": True}
 
     @property
     def status(self) -> RuntimeStatus:

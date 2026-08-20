@@ -343,6 +343,14 @@ class MemoryStore:
             ).fetchall()
             return [_note_from_row(r) for r in rows]
 
+    def list_notes(self, limit: int) -> list[Note]:
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [_note_from_row(r) for r in rows]
+
     def unconsolidated_notes(self, limit: int) -> list[Note]:
         with self._lock:
             rows = self._db().execute(
