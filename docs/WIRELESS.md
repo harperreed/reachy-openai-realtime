@@ -45,7 +45,7 @@ Run these as manual acceptance checks on the robot. Network, model, microphone, 
 cannot be guaranteed by the package alone.
 
 1. Reachy says “Hello. Talk to me.” after connecting with the default settings.
-2. Changing the language updates the full UI immediately and the next spoken response.
+2. Changing the language updates static UI text and translated status entries immediately, and the next spoken response uses the selected language.
 3. The microphone meter rises while a person speaks.
 4. After 800 ms of silence, the app commits the input and requests a response; successful playback confirms
    the network, model, and speaker path.

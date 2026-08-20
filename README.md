@@ -75,7 +75,8 @@ installs. Otherwise the app uses `$XDG_CONFIG_HOME/reachy-mini/apps/reachy_opena
 
 ## API key security
 
-The settings UI stores the key in:
+When neither `REACHY_OPENAI_REALTIME_CONFIG_DIR` nor `XDG_CONFIG_HOME` changes it, the settings UI stores
+the key in:
 
 ```text
 ~/.config/reachy-mini/apps/reachy_openai_realtime/.env
