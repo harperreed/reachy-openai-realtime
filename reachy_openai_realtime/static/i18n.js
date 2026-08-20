@@ -140,6 +140,11 @@
     camera_disabled_message: ["AI camera disabled.", "AIカメラをOFFにしました。", "AI摄像头已关闭。", "AI 카메라를 껐습니다.", "Cámara con IA desactivada.", "Caméra IA désactivée.", "KI-Kamera deaktiviert.", "Fotocamera IA disattivata.", "Câmara com IA desativada."],
     diagnostics_failed: ["Could not get the diagnostics", "診断ログを取得できませんでした", "无法获取诊断信息", "진단 로그를 가져올 수 없습니다", "No se pudo obtener el diagnóstico", "Impossible d’obtenir le diagnostic", "Diagnose konnte nicht abgerufen werden", "Impossibile ottenere la diagnostica", "Não foi possível obter o diagnóstico"],
     diagnostics_copied: ["Diagnostics copied.", "診断ログをコピーしました。", "诊断信息已复制。", "진단 로그를 복사했습니다.", "Diagnóstico copiado.", "Diagnostic copié.", "Diagnose kopiert.", "Diagnostica copiata.", "Diagnóstico copiado."],
+
+    memory_title: ["Memory", "メモリー", "记忆", "메모리", "Memoria", "Mémoire", "Gedächtnis", "Memoria", "Memória"],
+    memory_search: ["Search memory", "メモリーを検索", "搜索记忆", "메모리 검색", "Buscar en memoria", "Rechercher en mémoire", "Gedächtnis durchsuchen", "Cerca in memoria", "Pesquisar memória"],
+    memory_empty: ["No memories yet", "まだ何も覚えていません", "暂无记忆", "아직 기억이 없습니다", "Sin recuerdos aún", "Aucun souvenir pour le moment", "Noch keine Einträge", "Nessun ricordo ancora", "Ainda sem memórias"],
+    memory_unavailable: ["Memory unavailable", "メモリーは利用できません", "记忆不可用", "메모리를 사용할 수 없습니다", "Memoria no disponible", "Mémoire indisponible", "Gedächtnis nicht verfügbar", "Memoria non disponibile", "Memória indisponível"],
   };
 
   const strings = Object.fromEntries(CODES.map((code, index) => [

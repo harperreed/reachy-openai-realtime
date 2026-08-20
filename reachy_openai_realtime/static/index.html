@@ -100,6 +100,17 @@
         </div>
       </section>
 
+      <section class="memory-panel" aria-labelledby="memory-heading">
+        <h2 class="section-heading" id="memory-heading" data-i18n="memory_title">Memory</h2>
+        <div class="memory-controls">
+          <input type="search" id="memory-search" data-i18n-placeholder="memory_search" placeholder="Search memory" />
+          <span id="memory-count" class="memory-count"></span>
+        </div>
+        <ul id="memory-list" class="memory-list"></ul>
+        <p id="memory-empty" data-i18n="memory_empty" hidden>No memories yet</p>
+        <p id="memory-unavailable" data-i18n="memory_unavailable" hidden>Memory unavailable</p>
+      </section>
+
       <dl class="runtime">
         <div><dt data-i18n="motion">Motion</dt><dd id="last-motion">—</dd></div>
         <div><dt data-i18n="last_updated">Last updated</dt><dd id="updated-at">—</dd></div>

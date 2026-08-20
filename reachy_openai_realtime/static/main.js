@@ -26,6 +26,9 @@ function applyStaticTranslations() {
   for (const element of document.querySelectorAll("[data-i18n-alt]")) {
     element.setAttribute("alt", t(element.dataset.i18nAlt));
   }
+  for (const element of document.querySelectorAll("[data-i18n-placeholder]")) {
+    element.setAttribute("placeholder", t(element.dataset.i18nPlaceholder));
+  }
 }
 
 function setMessage(text, error = false) {
@@ -265,6 +268,58 @@ function renderRuntime(status) {
   }
 }
 
+async function refreshMemory() {
+  const query = document.getElementById("memory-search").value.trim();
+  const url = query ? `/api/memory?q=${encodeURIComponent(query)}` : "/api/memory";
+  const response = await fetch(url);
+  const data = await response.json();
+  const list = document.getElementById("memory-list");
+  const empty = document.getElementById("memory-empty");
+  const unavailable = document.getElementById("memory-unavailable");
+  list.replaceChildren();
+  unavailable.hidden = data.ok !== false;
+  if (data.ok === false) return;
+  document.getElementById("memory-count").textContent = String(data.count);
+  empty.hidden = data.memories.length > 0;
+  for (const memory of data.memories) {
+    list.appendChild(renderMemoryItem(memory));
+  }
+}
+
+function renderMemoryItem(memory) {
+  const item = document.createElement("li");
+  item.className = "memory-item";
+  const text = document.createElement("span");
+  text.className = "memory-text";
+  text.textContent = memory.text;
+  const meta = document.createElement("span");
+  meta.className = "memory-meta";
+  meta.textContent = `${memory.kind} · ${memory.source}`;
+  const pin = document.createElement("button");
+  pin.textContent = memory.pinned ? "★" : "☆";
+  pin.addEventListener("click", async () => {
+    await fetch(`/api/memory/${memory.id}/pin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned: !memory.pinned }),
+    });
+    refreshMemory();
+  });
+  const remove = document.createElement("button");
+  remove.textContent = "✕";
+  remove.addEventListener("click", async () => {
+    await fetch(`/api/memory/${memory.id}`, { method: "DELETE" });
+    refreshMemory();
+  });
+  item.append(text, meta, pin, remove);
+  return item;
+}
+
+document.getElementById("memory-search").addEventListener("input", () => {
+  clearTimeout(refreshMemory._debounce);
+  refreshMemory._debounce = setTimeout(refreshMemory, 300);
+});
+
 async function refresh() {
   if (refreshInFlight) return;
   refreshInFlight = true;
@@ -358,4 +413,6 @@ document.getElementById("copy-diagnostics").addEventListener("click", async () =
 
 applyStaticTranslations();
 refresh();
+refreshMemory();
 window.setInterval(refresh, 1000);
+window.setInterval(refreshMemory, 5000);
