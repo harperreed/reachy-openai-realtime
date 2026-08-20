@@ -130,6 +130,24 @@ def test_tool_definitions_gate_on_catalog_availability() -> None:
     assert "play_dance" not in names
 
 
+def test_play_tool_schemas_enumerate_catalog_names() -> None:
+    """The model picks names straight from the schema; an open string invites
+    invented names and leaves the model preferring the enum'd express tool."""
+    manager = MotionManager(
+        FakeRobot(),
+        emotions=ready_catalog({"happy1": FakeMove(), "sad2": FakeMove()}),
+    )
+    play = next(t for t in manager.tool_definitions() if t["name"] == "play_emotion")
+    assert play["parameters"]["properties"]["emotion"]["enum"] == ["happy1", "sad2"]
+
+    from reachy_openai_realtime.motion.tools import RECORDED_MOVE_TOOL_DEFINITIONS
+
+    pristine = next(
+        t for t in RECORDED_MOVE_TOOL_DEFINITIONS["emotion"] if t["name"] == "play_emotion"
+    )
+    assert "enum" not in pristine["parameters"]["properties"]["emotion"]
+
+
 def test_emotion_names_lists_catalog() -> None:
     manager = MotionManager(FakeRobot(), emotions=ready_catalog({"happy1": FakeMove(), "sad2": FakeMove()}))
     assert manager.emotion_names() == ["happy1", "sad2"]

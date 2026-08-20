@@ -55,7 +55,7 @@ Use robot motion only when it supports the conversation:
 - Use nod for agreement or affirmation.
 - Use shake_head for disagreement or negation.
 - Use look to show attention to a person or topic.
-- Use express for a gentle emotional reaction.
+- Use express for a subtle emotional accent while talking.
 - Do not overuse motion tools or contradict the spoken response.
 """.strip()
 
@@ -63,7 +63,17 @@ Use robot motion only when it supports the conversation:
 def recorded_moves_instructions(emotions: list[str], dances: list[str]) -> str:
     if not emotions and not dances:
         return ""
-    lines: list[str] = []
+    recorded_tools = [name for name, names in (("play_emotion", emotions), ("play_dance", dances)) if names]
+    lines: list[str] = [
+        "- When asked to show an emotion, react expressively, or dance, prefer "
+        + " / ".join(recorded_tools)
+        + " over express — recorded moves are full performances lasting several seconds."
+        " Announce the move with one short line; do not describe motion you did not perform.",
+        (
+            "- When asked what emotions or dances you can perform, say a handful of appealing"
+            " examples from the lists below — never read out every name."
+        ),
+    ]
     if emotions:
         lines.append("- play_emotion accepts exactly these names: " + ", ".join(emotions))
     if dances:
