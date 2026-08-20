@@ -163,6 +163,15 @@ class BargeInMotion:
     def set_speaking_enabled(self, enabled: bool) -> None:
         pass
 
+    def emotion_names(self) -> list:
+        return []
+
+    def dance_names(self) -> list:
+        return []
+
+    def tool_definitions(self) -> list:
+        return []
+
 
 class BargeInFramesMedia(BargeInMedia):
     def __init__(self, frames: list[np.ndarray]) -> None:
