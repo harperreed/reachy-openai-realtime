@@ -77,3 +77,11 @@
   `POST /api/move/play/wake_up` (confirm `/api/state/present_head_pose` z ≈ 0, not ≈ −47mm) →
   `POST /api/apps/start-app/...`. `daemon/start?wake_up=true` is a no-op if daemon state is
   already `running`; asleep = `backend_status.ready:false` + `motor_control_mode:"disabled"`.
+- **`POST /api/apps/update/{app}` refuses while that app is running** ("Cannot update ... while
+  it is running. Please stop it first."). Deploy order: `stop-current-app` → update job →
+  verify awake → `start-app`. An update fired into an empty app slot works directly.
+- **Shutdown has a built-in ritual, symmetric with start.** `POST /api/move/play/goto_sleep`
+  tucks the head into the shell AND then suspends the backend (`ready:false`, motors
+  `disabled`) — one call is a full soft shutdown once the app is stopped. `POST
+  /api/daemon/stop` requires `?goto_sleep=true|false` (422 without it), mirroring
+  `daemon/start?wake_up=`. Sleep pose signature: head z ≈ −47mm, pitch ≈ 0.47 rad.
