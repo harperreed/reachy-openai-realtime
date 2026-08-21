@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# ABOUTME: Lifecycle control for a Reachy Mini running reachy_openai_realtime.
+# ABOUTME: Wraps the robot daemon API: status / shutdown / start / restart / deploy.
+#
+# The daemon has sharp edges this script encodes so nobody has to remember them:
+# responses embed raw control chars (scrubbed before jq), update refuses while
+# the app runs (stop first), start-app does not wake a sleeping body (issue #25),
+# and goto_sleep both tucks the head and suspends the backend. See gotchas.md.
+
+set -u
+
+HOST="192.168.200.128"
+APP="reachy_openai_realtime"
+CURL_TIMEOUT=15
+
+usage() {
+    cat <<EOF
+usage: scripts/robot [-H host] <command>
+
+commands:
+  status     Daemon, motors, head pose, app slot, and Realtime connection.
+  shutdown   Stop the app, tuck the head into the shell (goto_sleep), motors off.
+  start      Wake the robot if asleep, then start the app and wait for Realtime.
+  restart    Stop the app, then run start.
+  deploy     Stop the app, apply the pending update, then run start.
+
+options:
+  -H host    Robot address (default: $HOST — the night robot).
+
+Sleep signature: head z ~ -47mm. Awake: z ~ 0. The app dashboard lives on
+port 8042, the daemon on 8000.
+EOF
+    exit "${1:-0}"
+}
+
+while getopts ":H:h" opt; do
+    case "$opt" in
+        H) HOST="$OPTARG" ;;
+        h) usage 0 ;;
+        *) echo "error: unknown option -$OPTARG" >&2; usage 1 ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 1 ] || usage 1
+CMD="$1"
+
+DAEMON="http://$HOST:8000"
+APPDASH="http://$HOST:8042"
+
+command -v jq >/dev/null || { echo "error: jq is required" >&2; exit 1; }
+
+scrub() { tr -d '\000-\010\013-\037'; }
+
+# api METHOD PATH -> body on stdout; dies with the body on curl failure or HTTP >= 400.
+api() {
+    local method="$1" path="$2" body status
+    body=$(curl -s -m "$CURL_TIMEOUT" -w '\n%{http_code}' -X "$method" "$DAEMON$path" | scrub) || {
+        echo "error: $method $path: no response from $HOST:8000" >&2
+        exit 1
+    }
+    status="${body##*$'\n'}"
+    body="${body%$'\n'*}"
+    if [ "$status" -ge 400 ] 2>/dev/null; then
+        echo "error: $method $path -> HTTP $status: $body" >&2
+        exit 1
+    fi
+    printf '%s' "$body"
+}
+
+head_z() { api GET /api/state/present_head_pose | jq -r .z; }
+
+is_tucked() { awk -v z="$(head_z)" 'BEGIN { exit !(z < -0.035) }'; }
+is_up()     { awk -v z="$(head_z)" 'BEGIN { exit !(z > -0.02) }'; }
+
+# wait_for LABEL SECONDS PREDICATE...
+wait_for() {
+    local label="$1" deadline="$2"; shift 2
+    local waited=0
+    while ! "$@"; do
+        if [ "$waited" -ge "$deadline" ]; then
+            echo "error: timed out after ${deadline}s waiting for $label" >&2
+            return 1
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+}
+
+app_slot() { api GET /api/apps/current-app-status; }
+
+stop_app() {
+    if [ "$(app_slot)" = "null" ]; then
+        echo "app: already stopped"
+    else
+        api POST /api/apps/stop-current-app >/dev/null
+        wait_for "app slot to clear" 30 app_slot_empty
+        echo "app: stopped"
+    fi
+}
+app_slot_empty() { [ "$(app_slot)" = "null" ]; }
+
+wake_robot() {
+    if is_up; then
+        echo "robot: already awake (head up)"
+        return 0
+    fi
+    local state
+    state=$(api GET /api/daemon/status | jq -r .state)
+    if [ "$state" != "running" ]; then
+        echo "robot: daemon $state -> starting with wake_up"
+        api POST "/api/daemon/start?wake_up=true" >/dev/null
+    else
+        # daemon/start?wake_up is a no-op while the daemon runs; wake by hand.
+        echo "robot: asleep -> enabling motors, playing wake_up"
+        api POST /api/motors/set_mode/enabled >/dev/null
+        api POST /api/move/play/wake_up >/dev/null
+    fi
+    wait_for "head to come up" 30 is_up
+    echo "robot: awake (head z $(head_z))"
+}
+
+start_app() {
+    api POST "/api/apps/start-app/$APP" >/dev/null
+    echo "app: starting (Realtime connect takes 25-45s cold)"
+    wait_for "Realtime connection" 120 app_connected
+    echo "app: connected ($(curl -s -m 5 "$APPDASH/api/status" | scrub | jq -r '.phase // "?"'))"
+}
+app_connected() {
+    [ "$(curl -s -m 5 "$APPDASH/api/status" | scrub | jq -r '.connected' 2>/dev/null)" = "true" ]
+}
+
+pose_label() {
+    awk -v z="$1" 'BEGIN {
+        if (z < -0.035) print "tucked/asleep";
+        else if (z > -0.02) print "up/awake";
+        else print "in between"
+    }'
+}
+
+cmd_status() {
+    local daemon slot z
+    daemon=$(api GET /api/daemon/status)
+    echo "daemon:  state=$(printf '%s' "$daemon" | jq -r .state) ready=$(printf '%s' "$daemon" | jq -r .backend_status.ready) motors=$(printf '%s' "$daemon" | jq -r .backend_status.motor_control_mode)"
+    z=$(head_z)
+    echo "head:    z=$z  ($(pose_label "$z"))"
+    slot=$(app_slot)
+    if [ "$slot" = "null" ]; then
+        echo "app:     not running"
+    else
+        echo "app:     $(printf '%s' "$slot" | jq -r '"\(.info.name) state=\(.state)"')"
+        if app_connected; then
+            echo "realtime: connected phase=$(curl -s -m 5 "$APPDASH/api/status" | scrub | jq -r '.phase // "?"')"
+        else
+            echo "realtime: not connected"
+        fi
+    fi
+}
+
+cmd_shutdown() {
+    stop_app
+    if is_tucked; then
+        echo "robot: already in the shell"
+    else
+        api POST /api/move/play/goto_sleep >/dev/null
+        wait_for "head to tuck into the shell" 30 is_tucked
+        echo "robot: tucked (head z $(head_z))"
+    fi
+    # goto_sleep suspends the backend on its own; report where it landed.
+    echo "motors: $(api GET /api/motors/status | jq -r .mode)"
+    echo "shutdown complete"
+}
+
+cmd_start() {
+    wake_robot
+    if [ "$(app_slot)" != "null" ]; then
+        echo "app: a stale slot is occupied -> clearing it first"
+        stop_app
+    fi
+    start_app
+    echo "start complete"
+}
+
+cmd_deploy() {
+    stop_app
+    local job job_id status
+    job=$(api POST "/api/apps/update/$APP")
+    job_id=$(printf '%s' "$job" | jq -r '.job_id // empty')
+    [ -n "$job_id" ] || { echo "error: update returned no job_id: $job" >&2; exit 1; }
+    echo "update: job $job_id"
+    local waited=0
+    while :; do
+        status=$(api GET "/api/apps/job-status/$job_id" | jq -r .status)
+        case "$status" in
+            done) echo "update: done"; break ;;
+            failed)
+                echo "error: update failed:" >&2
+                api GET "/api/apps/job-status/$job_id" | jq -r '.logs[]?' >&2
+                exit 1 ;;
+        esac
+        [ "$waited" -ge 300 ] && { echo "error: update timed out (job $job_id still $status)" >&2; exit 1; }
+        sleep 5
+        waited=$((waited + 5))
+    done
+    cmd_start
+}
+
+case "$CMD" in
+    status)   cmd_status ;;
+    shutdown) cmd_shutdown ;;
+    start)    cmd_start ;;
+    restart)  stop_app; cmd_start ;;
+    deploy)   cmd_deploy ;;
+    *) echo "error: unknown command '$CMD'" >&2; usage 1 ;;
+esac
