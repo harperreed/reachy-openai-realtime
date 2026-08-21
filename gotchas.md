@@ -69,3 +69,11 @@
   described as "the" emotional reaction and recorded names given as a bare list, play_emotion
   never fired once on hardware. Steering needs all three: enum names in the tool schema, an
   explicit prefer-recorded instruction, and honest tool descriptions (express = subtle accent).
+- **Starting the app does not wake the robot — a sleeping robot stays in its shell, "breathing".**
+  App start while motors are `disabled` leaves the head down; MotionManager then animates around
+  the sleep pose it booted into, and the app's robot-lock target stream overrides any external
+  `wake_up` move (issue #25). Wake sequence that works over the daemon API:
+  `POST /api/apps/stop-current-app` → `POST /api/motors/set_mode/enabled` →
+  `POST /api/move/play/wake_up` (confirm `/api/state/present_head_pose` z ≈ 0, not ≈ −47mm) →
+  `POST /api/apps/start-app/...`. `daemon/start?wake_up=true` is a no-op if daemon state is
+  already `running`; asleep = `backend_status.ready:false` + `motor_control_mode:"disabled"`.
