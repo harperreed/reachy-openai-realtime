@@ -107,6 +107,7 @@ class MotionManager:
         self._base_head: np.ndarray | None = None
         self._last_activity_at = time.monotonic()
         self._idle_start_delay = 0.3
+        self._recenter_delay = 30.0
         self._idle_period = 1.0 / 30.0
         self._thread = threading.Thread(target=self._worker, name="motion-worker", daemon=True)
 
@@ -530,6 +531,18 @@ class MotionManager:
         now = time.monotonic()
         if now - self._last_activity_at < self._idle_start_delay:
             return
+        if now - self._last_activity_at >= self._recenter_delay:
+            # look() rebases the head permanently so gaze survives gestures and
+            # speech; sustained quiet is the only path back to neutral — without
+            # this the head lists at its last look direction indefinitely.
+            neutral = np.asarray(
+                create_head_pose(0, 0, 0, 0, 0, 0, degrees=True), dtype=np.float64
+            )
+            if not np.allclose(self._get_base_head(), neutral, atol=1e-6):
+                self._set_base_head(neutral)
+                self._idle_motion = None
+                self._idle_started_at = None
+                self._emit("motion.recentered")
         if self._idle_motion is None or self._idle_started_at is None:
             try:
                 start_head = self.robot.get_current_head_pose()

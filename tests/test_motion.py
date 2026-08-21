@@ -118,6 +118,56 @@ def test_idle_breathing_stops_when_disabled() -> None:
     assert len(robot.targets) == 1
 
 
+def test_idle_recenters_base_after_quiet_period() -> None:
+    robot = FakeRobot()
+    controller = MotionManager(robot)
+    events: list[str] = []
+    controller.attach_recorder(lambda event, **fields: events.append(event))
+    controller._idle_start_delay = 0.0
+    controller._recenter_delay = 0.0
+    controller._set_base_head(create_head_pose(yaw=-22, degrees=True))
+    controller.set_idle_enabled(True)
+
+    controller._update_idle_motion()
+
+    neutral = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    np.testing.assert_allclose(controller._get_base_head(), neutral)
+    assert controller._idle_motion is not None
+    np.testing.assert_allclose(controller._idle_motion.base_head, neutral)
+    assert "motion.recentered" in events
+
+
+def test_idle_keeps_look_direction_before_recenter_delay() -> None:
+    robot = FakeRobot()
+    controller = MotionManager(robot)
+    controller._idle_start_delay = 0.0
+    controller._recenter_delay = 3600.0
+    look_head = create_head_pose(yaw=22, degrees=True)
+    controller._set_base_head(look_head)
+    controller.set_idle_enabled(True)
+
+    controller._update_idle_motion()
+
+    np.testing.assert_allclose(controller._get_base_head(), look_head)
+
+
+def test_recenter_skips_when_base_is_already_neutral() -> None:
+    robot = FakeRobot()
+    controller = MotionManager(robot)
+    events: list[str] = []
+    controller.attach_recorder(lambda event, **fields: events.append(event))
+    controller._idle_start_delay = 0.0
+    controller._recenter_delay = 0.0
+    controller.set_idle_enabled(True)
+
+    controller._update_idle_motion()
+    generator = controller._idle_motion
+    controller._update_idle_motion()
+
+    assert events == []
+    assert controller._idle_motion is generator
+
+
 def test_listening_nod_runs_once_then_stays_neutral() -> None:
     motion = ListeningNodMotion(
         create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
