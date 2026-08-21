@@ -112,7 +112,14 @@ class MotionManager:
         self._thread = threading.Thread(target=self._worker, name="motion-worker", daemon=True)
 
     def start(self) -> None:
-        self._get_base_head()
+        # The head may be anywhere at app boot (mid-gesture pose from a prior
+        # run, hand-positioned, fresh off wake_up); capturing it as the ambient
+        # base makes every idle motion orbit that tilt. Neutral is always the
+        # right base at start — the generators' start→base interpolation eases
+        # the head over instead of snapping.
+        self._set_base_head(
+            np.asarray(create_head_pose(0, 0, 0, 0, 0, 0, degrees=True), dtype=np.float64)
+        )
         self._thread.start()
 
     def attach_recorder(self, record: Callable[..., None]) -> None:

@@ -168,6 +168,19 @@ def test_recenter_skips_when_base_is_already_neutral() -> None:
     assert controller._idle_motion is generator
 
 
+def test_start_uses_neutral_base_even_when_head_is_tilted() -> None:
+    class TiltedRobot(FakeRobot):
+        def get_current_head_pose(self) -> np.ndarray:
+            return create_head_pose(0, 0, 0, 0, 0, -22, degrees=True)
+
+    controller = MotionManager(TiltedRobot())
+    controller.start()
+
+    neutral = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+    np.testing.assert_allclose(controller._get_base_head(), neutral)
+    controller.close()
+
+
 def test_listening_nod_runs_once_then_stays_neutral() -> None:
     motion = ListeningNodMotion(
         create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
