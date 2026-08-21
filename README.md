@@ -116,6 +116,10 @@ uv run reachy-mini-app-assistant check .
 
 The motion layer validates tool names and arguments and maps them to bounded presets. The model never receives raw joint-angle control.
 
+### Robot lifecycle
+
+`scripts/robot` drives a robot over the daemon API from the dev box: `status`, `shutdown` (stop app, tuck into the shell), `start` (wake if asleep, start app, wait for Realtime), `restart`, and `deploy` (stop, apply pending update, start). Defaults to the night robot; `-H <host>` for another. It encodes the ordering the daemon requires — apps must stop before updates, and a sleeping robot needs waking before the app starts (issue #25).
+
 ### Motion tools
 
 | Tool | What it does |
