@@ -125,7 +125,7 @@
   no partial behind. The lone OSError it still lets through raw is `directory.mkdir`, which
   `_build_wake_detector`'s broad except neutralizes into graceful degradation.
 - **Setting the session stop flag does NOT tear down an actively-engaged Realtime session** (FIXED
-  on branch `fix-session-sleep-teardown`, not yet deployed) — the bug: `POST /api/presence/sleep`
+  on local `main` commit `3036352`, not pushed to origin, not yet deployed) — the bug: `POST /api/presence/sleep`
   could not reliably sleep a robot mid-conversation. `_run_connection` blocked on a bare
   `await asyncio.gather(*tasks)` over six tasks; two — `_watchdog_loop` (no stop param) and
   `_supervisor_loop` (`while True`) — never check the stop flag, and `gather(return_exceptions=False)`
