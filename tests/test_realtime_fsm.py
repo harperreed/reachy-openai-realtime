@@ -69,6 +69,7 @@ def test_manual_turn_walks_listening_speaking_waiting() -> None:
     session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
     session._mic_ladder = AudioRecoveryLadder()
     session._capture.start()
+    session._audio = session._capture.subscribe("realtime")
     asyncio.run(session._record_loop(stop_event))
     session._capture.close()
 
@@ -88,6 +89,7 @@ def test_frames_ignored_while_waiting_for_response() -> None:
     session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
     session._mic_ladder = AudioRecoveryLadder()
     session._capture.start()
+    session._audio = session._capture.subscribe("realtime")
     asyncio.run(session._record_loop(stop_event))
     session._capture.close()
 

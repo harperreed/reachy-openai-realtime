@@ -8,6 +8,8 @@ from typing import Any
 
 from conftest import FakeRecorder, ScriptedConnection, realtime_event
 
+from reachy_openai_realtime.audio.capture import CaptureWorker
+
 # ---------------------------------------------------------------------------
 # Step 1: Pure policy tests for RestartBudget
 # ---------------------------------------------------------------------------
@@ -53,6 +55,9 @@ def _make_fake_robot():
 
         def get_input_audio_samplerate(self) -> int:
             return 16_000
+
+        def get_audio_sample(self) -> Any:
+            return None
 
         def get_output_audio_samplerate(self) -> int:
             return 24_000
@@ -159,7 +164,9 @@ def test_supervisor_fires_on_fsm_inactivity(monkeypatch) -> None:
 
     stop_event = asyncio.Event()
 
-    session = RealtimeRobotSession(robot, motion, config, status)
+    capture = CaptureWorker(robot.media)
+    capture.start()
+    session = RealtimeRobotSession(robot, motion, config, status, capture=capture)
     motion.start()
 
     async def _run_bounded() -> Any:
@@ -170,6 +177,7 @@ def test_supervisor_fires_on_fsm_inactivity(monkeypatch) -> None:
             return None
 
     asyncio.run(_run_bounded())
+    session._capture.close()
     motion.close()
 
     # Supervisor should have fired: supervisor.intervention event recorded.
@@ -235,7 +243,9 @@ def test_supervisor_silent_when_listening(monkeypatch) -> None:
 
     stop_event = asyncio.Event()
 
-    session = RealtimeRobotSession(robot, motion, config, status)
+    capture = CaptureWorker(robot.media)
+    capture.start()
+    session = RealtimeRobotSession(robot, motion, config, status, capture=capture)
     motion.start()
 
     # Let the session idle in LISTENING for ~150ms, then stop it cleanly.
@@ -249,6 +259,7 @@ def test_supervisor_silent_when_listening(monkeypatch) -> None:
             return None
 
     asyncio.run(_run_bounded())
+    session._capture.close()
     motion.close()
 
     event_names = [e for e, _ in fake_recorder.events]

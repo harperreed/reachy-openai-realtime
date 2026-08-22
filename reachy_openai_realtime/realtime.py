@@ -22,6 +22,7 @@ from openai.types.realtime import (
 )
 
 from .audio.capture import AudioPipelineStalled, AudioRecoveryLadder, CaptureWorker
+from .audio.fanout import AudioSubscription
 from .audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
 from .config import (
     AppConfig,
@@ -137,6 +138,7 @@ class RealtimeRobotSession:
         motion: MotionManager,
         config: AppConfig,
         status: RuntimeStatus,
+        capture: CaptureWorker,
         language_provider: Callable[[], str] | None = None,
         camera_enabled: Callable[[], bool] | None = None,
         capture_camera_jpeg: Callable[[], bytes | None] | None = None,
@@ -147,6 +149,7 @@ class RealtimeRobotSession:
         self.motion = motion
         self.config = config
         self.status = status
+        self._capture = capture
         self._language_provider = language_provider
         self._camera_enabled_callback = camera_enabled
         self._capture_camera_jpeg = capture_camera_jpeg
@@ -195,7 +198,7 @@ class RealtimeRobotSession:
                 )
         self._last_fsm_transition_at = time.monotonic()
         self._mic_ladder = AudioRecoveryLadder()
-        self._capture: CaptureWorker | None = None
+        self._audio: AudioSubscription | None = None
         self._connected_at: float | None = None
         self._connected_epoch: int | None = None
         self._speech_ended_at: float | None = None
@@ -224,8 +227,7 @@ class RealtimeRobotSession:
             self.status.record_event("response.first_audio_played")
 
     async def run(self, stop_event: Any) -> SessionOutcome:
-        self._capture = CaptureWorker(self.robot.media)
-        self._capture.start()
+        self._audio = self._capture.subscribe("realtime")
         self.status.record_event("audio.capture.started")
         self._speaker.start()
         self.status.record_event("audio.playback.started")
@@ -268,9 +270,9 @@ class RealtimeRobotSession:
             return SessionOutcome.STOPPED
         finally:
             self._speaker.close()
-            self._capture.close()
+            self._capture.unsubscribe("realtime")
+            self._audio = None
             self.status.record_event("audio.capture.stopped")
-            self._capture = None
             self.status.set_component_health("microphone", False, expires=False)
             self.status.set_component_health("speaker", False, expires=False)
 
@@ -427,11 +429,12 @@ class RealtimeRobotSession:
                 else:
                     doa_poller = self._doa_poller
         while not stop_event.is_set():
-            sample = await asyncio.to_thread(self._capture.pop, 0.25)
-            if sample is None:
+            frame = await asyncio.to_thread(self._audio.pop, 0.25)
+            if frame is None:
                 action = self._mic_ladder.next_action(self._capture.frame_age_seconds())
                 await self._run_mic_recovery(action)
                 continue
+            sample = frame.samples
             if not microphone_ready:
                 microphone_ready = True
                 self.status.add_event(

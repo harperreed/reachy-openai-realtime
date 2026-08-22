@@ -1,15 +1,14 @@
-# ABOUTME: Dedicated mic-capture thread with a bounded drop-oldest frame buffer,
-# ABOUTME: plus the stall-recovery ladder (spec §6). Isolates blocking SDK calls.
+# ABOUTME: Dedicated mic-capture thread with fan-out to bounded per-consumer
+# ABOUTME: subscriptions, plus the stall-recovery ladder (spec §6, §9).
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 from typing import Any
 
-import numpy as np
+from .fanout import AudioFrame, AudioSubscription
 
 logger = logging.getLogger(__name__)
 
@@ -20,31 +19,41 @@ class AudioPipelineStalled(RuntimeError):
 
 class CaptureWorker:
     """Continuously drains media.get_audio_sample() so the SDK buffer never
-    grows unbounded (reachy_mini issue #436), regardless of session state."""
+    grows unbounded (reachy_mini issue #436), regardless of session state, and
+    fans each frame out to every subscriber (spec §9). One mic reader, many
+    consumers, for the whole app lifetime."""
 
     def __init__(self, media: Any, *, max_buffer_ms: float = 500.0) -> None:
         self._media = media
-        self._max_buffer_ms = max_buffer_ms
-        self._frames: deque[np.ndarray] = deque()
-        self._buffered_ms = 0.0
+        self._default_max_buffer_ms = max_buffer_ms
+        self._subscribers: dict[str, AudioSubscription] = {}
         self._lock = threading.Lock()
-        self._available = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._sample_rate = 16_000
         self.last_frame_at = time.monotonic()
         self.frames_total = 0
-        self.dropped_frames = 0
+
+    def subscribe(self, name: str, *, max_buffer_ms: float | None = None) -> AudioSubscription:
+        sub = AudioSubscription(name, max_buffer_ms=max_buffer_ms or self._default_max_buffer_ms)
+        with self._lock:
+            self._subscribers[name] = sub
+        return sub
+
+    def unsubscribe(self, name: str) -> None:
+        with self._lock:
+            self._subscribers.pop(name, None)
 
     def start(self) -> None:
         if self._thread is not None:
             raise RuntimeError("CaptureWorker already started")
+        self._started = threading.Event()
         self._thread = threading.Thread(target=self._run, name="audio-capture", daemon=True)
         self._thread.start()
+        self._started.wait()  # block until samplerate read so callers can subscribe before first frame
 
     def close(self) -> None:
         self._stop.set()
-        self._available.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
@@ -52,24 +61,13 @@ class CaptureWorker:
     def frame_age_seconds(self) -> float:
         return time.monotonic() - self.last_frame_at
 
-    def pop(self, timeout_seconds: float) -> np.ndarray | None:
-        if not self._available.wait(timeout_seconds):
-            return None
-        with self._lock:
-            if not self._frames:
-                self._available.clear()
-                return None
-            frame = self._frames.popleft()
-            self._buffered_ms -= self._frame_ms(frame)
-            if not self._frames:
-                self._available.clear()
-            return frame
-
     def _run(self) -> None:
         try:
             self._sample_rate = int(self._media.get_input_audio_samplerate())
         except Exception:
             logger.exception("could not read input samplerate; assuming 16 kHz")
+        self._started.set()  # unblock start() so callers can subscribe before first frame is offered
+        time.sleep(0.005)  # yield to main thread so subscriptions can be registered before first frame
         while not self._stop.is_set():
             try:
                 frame = self._media.get_audio_sample()
@@ -81,18 +79,14 @@ class CaptureWorker:
                 time.sleep(0.005)  # SDK example polling cadence
                 continue
             self.last_frame_at = time.monotonic()
-            self.frames_total += 1  # written outside the lock: single writer (capture thread); reads are advisory
+            self.frames_total += 1  # single writer (capture thread); reads are advisory
+            audio_frame = AudioFrame(
+                samples=frame, sample_rate=self._sample_rate, captured_at=self.last_frame_at
+            )
             with self._lock:
-                self._frames.append(frame)
-                self._buffered_ms += self._frame_ms(frame)
-                while self._buffered_ms > self._max_buffer_ms and len(self._frames) > 1:
-                    dropped = self._frames.popleft()
-                    self._buffered_ms -= self._frame_ms(dropped)
-                    self.dropped_frames += 1
-                self._available.set()
-
-    def _frame_ms(self, frame: np.ndarray) -> float:
-        return len(frame) / self._sample_rate * 1000.0
+                subscribers = tuple(self._subscribers.values())
+            for sub in subscribers:
+                sub._offer(audio_frame)
 
 
 class AudioRecoveryLadder:

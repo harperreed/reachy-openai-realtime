@@ -37,6 +37,12 @@ class FakeMedia:
     def stop_playing(self) -> None:
         self.calls.append("stop_playing")
 
+    def get_input_audio_samplerate(self) -> int:
+        return 16_000
+
+    def get_audio_sample(self) -> Any:
+        return None
+
     # audio sub-object: apply_wireless_conversation_audio_config uses getattr safely
     # so omitting it is fine (returns False = current settings path).
 

@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from reachy_mini import ReachyMini, ReachyMiniApp
 
-from .audio.capture import AudioPipelineStalled
+from .audio.capture import AudioPipelineStalled, CaptureWorker
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
 from .memory.manager import MemoryManager, MemoryUnavailableError, UnknownMemoryIdError
@@ -434,6 +434,8 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             )
         self.memory_manager = memory_manager
         budget = RestartBudget()
+        capture = CaptureWorker(reachy_mini.media)
+        capture.start()
         try:
             while not stop_event.is_set():
                 config = AppConfig.from_env()
@@ -442,6 +444,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     motion,
                     config,
                     self.runtime_status,
+                    capture=capture,
                     language_provider=self._current_language,
                     camera_enabled=self._is_camera_enabled,
                     capture_camera_jpeg=self._capture_camera_frame,
@@ -502,6 +505,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                                 break
                             stop_event.wait(2.0)
         finally:
+            capture.close()
             try:
                 reachy_mini.media.stop_recording()
             finally:

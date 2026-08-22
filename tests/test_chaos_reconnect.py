@@ -7,7 +7,7 @@ import pytest
 from conftest import FakeRealtimeClient, FakeRecorder, ScriptedConnection, realtime_event
 from test_realtime_manual_turn import BargeInMotion, FakeMedia, stereo_frame
 
-from reachy_openai_realtime.audio.capture import AudioPipelineStalled, AudioRecoveryLadder
+from reachy_openai_realtime.audio.capture import AudioPipelineStalled, AudioRecoveryLadder, CaptureWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
@@ -49,7 +49,9 @@ def build_session(connections: list[ScriptedConnection], monkeypatch) -> Realtim
     var — hence the setenv. The fake client is swapped in afterwards."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-chaos-key-0000000000")
     robot = type("Robot", (), {"media": ChaosMedia([stereo_frame(-60.0) for _ in range(5)])})()
-    session = RealtimeRobotSession(robot, BargeInMotion(), AppConfig(), RuntimeStatus())
+    capture = CaptureWorker(robot.media)
+    capture.start()
+    session = RealtimeRobotSession(robot, BargeInMotion(), AppConfig(), RuntimeStatus(), capture=capture)
     session.client = FakeRealtimeClient(connections)
     return session
 
@@ -69,6 +71,7 @@ def test_disconnect_while_listening_reconnects_with_fresh_epoch(monkeypatch) -> 
     session._sleep_unless_stopped = _instant_sleep  # collapse backoff delay
 
     outcome = asyncio.run(session.run(stop_event))
+    session._capture.close()
 
     assert outcome is SessionOutcome.STOPPED
     assert session.connection_epoch == 2
@@ -93,6 +96,7 @@ def test_ten_transient_failures_do_not_leak_threads_or_state(monkeypatch) -> Non
 
     thread_count_before = threading.active_count()
     outcome = asyncio.run(session.run(stop_event))
+    session._capture.close()
 
     assert outcome is SessionOutcome.STOPPED
     assert attempts == list(range(1, 11))
@@ -123,6 +127,7 @@ def test_realtime_connected_and_disconnected_events_recorded(monkeypatch) -> Non
     session.status.attach_recorder(recorder)
 
     asyncio.run(session.run(stop_event))
+    session._capture.close()
 
     recorded_names = [e for e, _ in recorder.events]
     assert "realtime.connected" in recorded_names, f"realtime.connected not recorded; got {recorded_names}"
@@ -172,6 +177,7 @@ def test_watchdog_fires_reconnect_and_records_events(monkeypatch) -> None:
     session.status.attach_recorder(recorder)
 
     outcome = asyncio.run(session.run(stop_event))
+    session._capture.close()
 
     assert outcome is SessionOutcome.STOPPED
     # Epoch 2 means a reconnect happened (epoch 1 = first attempt, epoch 2 = second).
@@ -212,7 +218,9 @@ def test_audio_pipeline_stalled_escalates_and_cleans_up(monkeypatch) -> None:
 
     # Build a session with media that never yields audio frames.
     robot = type("Robot", (), {"media": EmptyChaosMedia()})()
-    session = RealtimeRobotSession(robot, BargeInMotion(), AppConfig(), RuntimeStatus())
+    capture = CaptureWorker(robot.media)
+    capture.start()
+    session = RealtimeRobotSession(robot, BargeInMotion(), AppConfig(), RuntimeStatus(), capture=capture)
 
     # Inject a fast-escalating ladder (stall after 0.001 s, cooldown 0.001 s).
     session._mic_ladder = AudioRecoveryLadder(stall_seconds=0.001, cooldown_seconds=0.001)
@@ -232,11 +240,13 @@ def test_audio_pipeline_stalled_escalates_and_cleans_up(monkeypatch) -> None:
         asyncio.run(session.run(stop_event))
 
     # Threads must be cleaned up.
-    # CaptureWorker.close() sets _thread = None after joining; SpeakerWorker.close()
-    # does the same.  Assert via the session's own worker references, not by name —
-    # other tests in the suite may leave daemon threads with the same name and would
-    # cause false negatives.
-    assert session._capture is None, "CaptureWorker reference not cleared after stall"
+    # SpeakerWorker.close() sets _thread = None after joining. Assert via the
+    # session's own worker references, not by name — other tests in the suite may
+    # leave daemon threads with the same name and would cause false negatives.
+    assert "realtime" not in session._capture._subscribers, (
+        "session did not unsubscribe on teardown"
+    )
+    session._capture.close()  # test owns the worker now; join its thread
     assert session._speaker._thread is None, (
         "SpeakerWorker._thread not cleared after stall — close() did not join"
     )

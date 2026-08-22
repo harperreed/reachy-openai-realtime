@@ -347,6 +347,7 @@ def test_doa_poller_fallback_does_not_replace_existing_poller() -> None:
     session._connected_at = None
     session._capture = CaptureWorker(media)
     session._capture.start()
+    session._audio = session._capture.subscribe("realtime")
 
     asyncio.run(session._record_loop(stop_event))
     session._capture.close()

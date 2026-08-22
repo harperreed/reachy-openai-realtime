@@ -42,15 +42,16 @@ def test_pop_returns_fed_frames_in_order() -> None:
     media = ScriptedMedia()
     worker = CaptureWorker(media)
     worker.start()
+    sub = worker.subscribe("test")
     try:
         first = frame_of_ms(20.0)
         first[0, 0] = 1.0
         media.feed(first)
         media.feed(frame_of_ms(20.0))
-        popped = worker.pop(1.0)
+        popped = sub.pop(1.0)
         assert popped is not None
-        assert popped[0, 0] == 1.0
-        assert worker.pop(1.0) is not None
+        assert popped.samples[0, 0] == 1.0
+        assert sub.pop(1.0) is not None
         assert worker.frames_total == 2
     finally:
         worker.close()
@@ -60,6 +61,7 @@ def test_backlog_drops_oldest_beyond_budget() -> None:
     media = ScriptedMedia()
     worker = CaptureWorker(media, max_buffer_ms=100.0)
     worker.start()
+    sub = worker.subscribe("test")
     try:
         for _ in range(50):
             media.feed(frame_of_ms(20.0))
@@ -67,9 +69,9 @@ def test_backlog_drops_oldest_beyond_budget() -> None:
         while worker.frames_total < 50 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert worker.frames_total == 50
-        assert worker.dropped_frames > 0
+        assert sub.dropped_frames > 0
         remaining = 0
-        while worker.pop(0.05) is not None:
+        while sub.pop(0.05) is not None:
             remaining += 1
         assert remaining <= 6  # ~100ms budget of 20ms frames (+1 in flight)
     finally:
@@ -79,9 +81,10 @@ def test_backlog_drops_oldest_beyond_budget() -> None:
 def test_pop_times_out_without_frames() -> None:
     worker = CaptureWorker(ScriptedMedia())
     worker.start()
+    sub = worker.subscribe("test")
     try:
         started = time.monotonic()
-        assert worker.pop(0.1) is None
+        assert sub.pop(0.1) is None
         assert time.monotonic() - started < 1.0
     finally:
         worker.close()

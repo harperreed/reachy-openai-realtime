@@ -4,6 +4,7 @@ import asyncio
 import os
 import threading
 
+from reachy_openai_realtime.audio.capture import CaptureWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
@@ -43,11 +44,14 @@ def make_session(connect_error: Exception, attempts: list[int]) -> RealtimeRobot
             return None
 
     robot = type("Robot", (), {"media": _FakeMedia()})()
+    capture = CaptureWorker(robot.media)
+    capture.start()
     session = RealtimeRobotSession(
         robot=robot,
         motion=_FakeMotion(),
         config=AppConfig(),
         status=RuntimeStatus(),
+        capture=capture,
     )
 
     async def failing_run_connection(stop_event: object) -> None:
@@ -67,6 +71,7 @@ def test_fatal_error_stops_reconnecting_immediately() -> None:
 
     assert outcome is SessionOutcome.FATAL_CONFIG
     assert attempts == [1]
+    session._capture.close()
 
 
 def test_transient_error_retries_with_new_epoch_until_stop() -> None:
@@ -89,3 +94,4 @@ def test_transient_error_retries_with_new_epoch_until_stop() -> None:
 
     assert outcome is SessionOutcome.STOPPED
     assert attempts == [1, 2, 3]
+    session._capture.close()
