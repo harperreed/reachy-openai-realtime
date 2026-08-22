@@ -80,3 +80,39 @@ def test_download_failure_is_wrapped(tmp_path):
     with pytest.raises(WakeModelError):
         ensure_wake_model(PIN, dest_dir=tmp_path, download=boom)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_install_chmod_failure_is_wrapped(tmp_path, monkeypatch):
+    # A disk fault while making the freshly downloaded file executable must raise
+    # WakeModelError (not a raw OSError) and leave no partial behind.
+    def boom(path: Path) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr("reachy_openai_realtime.wakeword.model_download._make_executable", boom)
+    download = _writer(PAYLOAD)
+    with pytest.raises(WakeModelError):
+        ensure_wake_model(PIN, dest_dir=tmp_path, download=download)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cached_model_chmod_failure_is_wrapped(tmp_path, monkeypatch):
+    # The reuse path also makes the file executable; a chmod fault there must raise
+    # WakeModelError rather than leak a raw OSError to the caller.
+    (tmp_path / PIN.filename).write_bytes(PAYLOAD)  # a valid, already-present model
+
+    def boom(path: Path) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr("reachy_openai_realtime.wakeword.model_download._make_executable", boom)
+    download = _writer(PAYLOAD)
+    with pytest.raises(WakeModelError):
+        ensure_wake_model(PIN, dest_dir=tmp_path, download=download)
+    assert download.calls == []  # present file, so no download was attempted
+
+
+def test_describe_survives_unreadable_path(tmp_path):
+    # _describe builds a verification-failure message; a path that stat()s but
+    # cannot be read (a directory) must not leak an OSError out of that message.
+    from reachy_openai_realtime.wakeword.model_download import _describe
+
+    assert _describe(tmp_path) == "missing file"

@@ -71,9 +71,10 @@ def _matches(path: Path, pin: WakeModelPin) -> bool:
 def _describe(path: Path) -> str:
     try:
         size = path.stat().st_size
+        sha = _sha256_of(path)
     except OSError:
         return "missing file"
-    return f"sha256 {_sha256_of(path)} size {size}"
+    return f"sha256 {sha} size {size}"
 
 
 def _make_executable(path: Path) -> None:
@@ -111,7 +112,10 @@ def ensure_wake_model(
     target = directory / pin.filename
 
     if _matches(target, pin):
-        _make_executable(target)
+        try:
+            _make_executable(target)
+        except OSError as error:
+            raise WakeModelError(f"wake model install failed: {error}") from error
         logger.info("wake model already present: %s", target)
         return target
 
@@ -129,6 +133,8 @@ def ensure_wake_model(
             )
         _make_executable(partial)
         os.replace(partial, target)  # atomic swap into place; readers never see a half file
+    except OSError as error:  # chmod/replace disk faults honor the same WakeModelError contract
+        raise WakeModelError(f"wake model install failed: {error}") from error
     finally:
         partial.unlink(missing_ok=True)
 

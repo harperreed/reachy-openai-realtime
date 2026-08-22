@@ -123,8 +123,10 @@ class PresenceManager:
         self._assembler = WakeAudioAssembler(self._ring_buffer, pre_roll_seconds=pre_roll_seconds)
 
         # _lock guards _pending and _session_stop; it is always taken BEFORE the
-        # state-machine lock (never the reverse), so _handle_transition — which
-        # runs under the state lock — must not take _lock.
+        # state-machine lock (never the reverse). transition() releases the state
+        # lock before it calls _handle_transition, and _on_wake/request_wake call
+        # transition() while holding _lock, so _handle_transition runs with _lock
+        # still held by the same thread and must not take _lock (it would deadlock).
         self._lock = threading.Lock()
         self._pending: _PendingWake | None = None
         self._session_stop: threading.Event | None = None
