@@ -1,6 +1,9 @@
 import textwrap
 
+import numpy as np
+
 from reachy_openai_realtime.wakeword.base import WakeWordDetection
+from reachy_openai_realtime.wakeword.edge_impulse import EdgeImpulseWakeWordDetector
 from reachy_openai_realtime.wakeword.eim_runner import EimRunner
 
 FAKE_RUNNER = textwrap.dedent(
@@ -86,3 +89,32 @@ def test_wake_word_detection_is_frozen_value():
     assert (detection.phrase, detection.score, detection.detected_at) == ("hey reachy", 0.91, 123.0)
     import dataclasses
     assert dataclasses.is_dataclass(detection) and detection.__dataclass_params__.frozen
+
+
+def test_detector_fires_when_score_crosses_threshold(tmp_path):
+    detector = EdgeImpulseWakeWordDetector(_write_runner(tmp_path), threshold=0.70)
+    detector.start()
+    try:
+        assert detector.required_sample_rate == 24_000
+        # < one window of silence: no classification yet
+        silence = np.zeros(24_000, dtype=np.int16).tobytes()
+        assert detector.process(silence) is None
+        # push enough loud audio to fill a 48k window and advance a slice
+        loud = np.full(48_000, 8_000, dtype=np.int16).tobytes()
+        detection = detector.process(loud)
+    finally:
+        detector.close()
+    assert detection is not None
+    assert detection.phrase == "hey reachy"
+    assert detection.score >= 0.70
+
+
+def test_detector_returns_none_below_threshold(tmp_path):
+    detector = EdgeImpulseWakeWordDetector(_write_runner(tmp_path), threshold=0.70)
+    detector.start()
+    try:
+        quiet = np.zeros(60_000, dtype=np.int16).tobytes()  # score 0.01 from fake runner
+        result = detector.process(quiet)
+    finally:
+        detector.close()
+    assert result is None
