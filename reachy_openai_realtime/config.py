@@ -28,6 +28,10 @@ LANGUAGE_ENV = "REACHY_OPENAI_REALTIME_LANGUAGE"
 _LANGUAGES_BY_CODE = {language.code: language for language in SUPPORTED_LANGUAGES}
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return min(high, max(low, value))
+
+
 def language_option(code: str) -> LanguageOption:
     try:
         return _LANGUAGES_BY_CODE[code.strip().lower()]
@@ -113,6 +117,25 @@ class AppConfig:
     memory_nap_chunk_size: int = 20
     memory_nap_branching: int = 8
     memory_nap_max_nodes: int = 10
+    wake_enabled: bool = True
+    wake_backend: str = "edge_impulse"
+    wake_phrase: str = "hey reachy"
+    wake_model_path: str = "models/hey-reachy-wake-word-detection-linux-aarch64.eim"
+    wake_threshold: float = 0.70
+    wake_debounce_seconds: float = 2.0
+    wake_history_seconds: float = 4.0
+    wake_preroll_ms: int = 400
+    max_wake_buffer_seconds: int = 10
+    wake_motion_enabled: bool = True
+    boot_motion_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        threshold = min(1.0, self.wake_threshold) if self.wake_threshold > 0.0 else 0.70
+        object.__setattr__(self, "wake_threshold", threshold)
+        object.__setattr__(self, "wake_debounce_seconds", _clamp(self.wake_debounce_seconds, 0.5, 10.0))
+        object.__setattr__(self, "wake_history_seconds", _clamp(self.wake_history_seconds, 1.0, 10.0))
+        object.__setattr__(self, "wake_preroll_ms", int(_clamp(self.wake_preroll_ms, 100, 1000)))
+        object.__setattr__(self, "max_wake_buffer_seconds", int(_clamp(self.max_wake_buffer_seconds, 2, 30)))
 
     @classmethod
     def from_env(cls) -> AppConfig:

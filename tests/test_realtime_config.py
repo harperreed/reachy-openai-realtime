@@ -101,3 +101,38 @@ def test_session_language_provider_changes_response_language() -> None:
 
     assert session._current_language() == "ja"
     assert "Japanese" in session._session_config()["instructions"]
+
+
+def test_wake_defaults_match_spec():
+    config = AppConfig()
+    assert config.wake_enabled is True
+    assert config.wake_backend == "edge_impulse"
+    assert config.wake_phrase == "hey reachy"
+    assert config.wake_model_path == "models/hey-reachy-wake-word-detection-linux-aarch64.eim"
+    assert config.wake_threshold == 0.70
+    assert config.wake_debounce_seconds == 2.0
+    assert config.wake_history_seconds == 4.0
+    assert config.wake_preroll_ms == 400
+    assert config.max_wake_buffer_seconds == 10
+    assert config.wake_motion_enabled is True
+    assert config.boot_motion_enabled is True
+
+
+def test_wake_settings_are_clamped_to_spec_ranges():
+    config = AppConfig(
+        wake_threshold=5.0,
+        wake_debounce_seconds=0.1,
+        wake_history_seconds=99.0,
+        wake_preroll_ms=5,
+        max_wake_buffer_seconds=100,
+    )
+    assert config.wake_threshold == 1.0          # 0.0 < t <= 1.0
+    assert config.wake_debounce_seconds == 0.5   # [0.5, 10]
+    assert config.wake_history_seconds == 10.0   # [1, 10]
+    assert config.wake_preroll_ms == 100         # [100, 1000]
+    assert config.max_wake_buffer_seconds == 30  # [2, 30]
+
+
+def test_wake_threshold_zero_or_negative_falls_back_to_default():
+    assert AppConfig(wake_threshold=0.0).wake_threshold == 0.70
+    assert AppConfig(wake_threshold=-1.0).wake_threshold == 0.70
