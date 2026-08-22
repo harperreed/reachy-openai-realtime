@@ -241,6 +241,16 @@ function renderRuntime(status) {
     suffix: cameraSuffix,
   });
 
+  const presenceStates = ["booting", "sleeping", "waking", "awake", "error"];
+  const presence = presenceStates.includes(status.presence) ? status.presence : null;
+  const wakeState = document.getElementById("wake-state");
+  wakeState.textContent = presence ? t(`presence_${presence}`) : t("wake_disabled");
+  wakeState.classList.toggle("ready", presence === "awake");
+  // Enable each control only from a state its endpoint accepts: request_wake
+  // takes SLEEPING or ERROR, request_sleep takes AWAKE (Task 14/§24).
+  document.getElementById("wake-button").disabled = !(presence === "sleeping" || presence === "error");
+  document.getElementById("sleep-button").disabled = presence !== "awake";
+
   const events = Array.isArray(status.events) ? status.events : [];
   document.getElementById("event-count").textContent = String(events.length);
   const list = document.getElementById("event-list");
@@ -411,6 +421,34 @@ document.getElementById("camera-toggle").addEventListener("click", async (event)
     setMessage(error.message, true);
   } finally {
     event.currentTarget.disabled = false;
+  }
+});
+
+document.getElementById("wake-button").addEventListener("click", async (event) => {
+  event.currentTarget.disabled = true;
+  try {
+    const response = await fetch("/api/presence/wake", { method: "POST" });
+    if (!response.ok) throw new Error(await errorMessage(response, t("wake_failed")));
+    const result = await response.json();
+    if (result.ok === false) throw new Error(t("wake_failed"));
+    setMessage(t("wake_requested"));
+    await refresh();
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+});
+
+document.getElementById("sleep-button").addEventListener("click", async (event) => {
+  event.currentTarget.disabled = true;
+  try {
+    const response = await fetch("/api/presence/sleep", { method: "POST" });
+    if (!response.ok) throw new Error(await errorMessage(response, t("sleep_failed")));
+    const result = await response.json();
+    if (result.ok === false) throw new Error(t("sleep_failed"));
+    setMessage(t("sleep_requested"));
+    await refresh();
+  } catch (error) {
+    setMessage(error.message, true);
   }
 });
 

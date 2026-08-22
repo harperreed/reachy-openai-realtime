@@ -145,6 +145,20 @@
     memory_search: ["Search memory", "メモリーを検索", "搜索记忆", "메모리 검색", "Buscar en memoria", "Rechercher en mémoire", "Gedächtnis durchsuchen", "Cerca in memoria", "Pesquisar memória"],
     memory_empty: ["No memories yet", "まだ何も覚えていません", "暂无记忆", "아직 기억이 없습니다", "Sin recuerdos aún", "Aucun souvenir pour le moment", "Noch keine Einträge", "Nessun ricordo ancora", "Ainda sem memórias"],
     memory_unavailable: ["Memory unavailable", "メモリーは利用できません", "记忆不可用", "메모리를 사용할 수 없습니다", "Memoria no disponible", "Mémoire indisponible", "Gedächtnis nicht verfügbar", "Memoria non disponibile", "Memória indisponível"],
+    wake_title: ["Wake word"],
+    presence_booting: ["Starting up"],
+    presence_sleeping: ["Asleep · say “hey reachy”"],
+    presence_waking: ["Waking up…"],
+    presence_awake: ["Awake · connected"],
+    presence_error: ["Wake model error · use Wake now"],
+    wake_disabled: ["Always on (wake word off)"],
+    wake_now: ["Wake now"],
+    sleep_now: ["Sleep now"],
+    wake_notice: ["Say “hey reachy” to wake the robot. While asleep it listens only for the wake phrase and never streams audio to OpenAI."],
+    wake_failed: ["Could not wake Reachy"],
+    wake_requested: ["Waking Reachy…"],
+    sleep_failed: ["Could not send Reachy to sleep"],
+    sleep_requested: ["Sending Reachy to sleep…"],
   };
 
   const strings = Object.fromEntries(CODES.map((code, index) => [

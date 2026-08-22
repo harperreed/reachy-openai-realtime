@@ -80,6 +80,18 @@
         <p class="notice" data-i18n="camera_notice">The camera is off by default. When enabled, one still image is sent to the OpenAI Realtime API when human speech starts.</p>
       </section>
 
+      <section class="wake-panel" aria-labelledby="wake-title">
+        <div class="section-heading">
+          <h2 id="wake-title" data-i18n="wake_title">Wake word</h2>
+          <span id="wake-state" class="pill" data-i18n="checking">Checking</span>
+        </div>
+        <div class="wake-controls">
+          <button id="wake-button" class="secondary" type="button" disabled data-i18n="wake_now">Wake now</button>
+          <button id="sleep-button" class="secondary" type="button" disabled data-i18n="sleep_now">Sleep now</button>
+        </div>
+        <p class="notice" data-i18n="wake_notice">Say "hey reachy" to wake the robot. While asleep it listens only for the wake phrase and never streams audio to OpenAI.</p>
+      </section>
+
       <section id="error-panel" class="error-panel" aria-live="assertive" hidden>
         <strong data-i18n="error">Error</strong>
         <p id="runtime-error"></p>
