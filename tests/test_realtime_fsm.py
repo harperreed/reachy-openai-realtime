@@ -53,6 +53,9 @@ def make_session(frames, stop_event) -> RealtimeRobotSession:
     session.watchdog = DeadlineWatchdog()
     session._doa_poller = None
     session._connected_at = None
+    session._pending_wake_audio = None
+    session._wake_ready = False
+    session._on_session_ready = None
     return session
 
 

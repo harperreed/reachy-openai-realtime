@@ -47,6 +47,16 @@ class EnergyTurnDetector:
         self._silence_ms = 0.0
         self._turn_ms = 0.0
 
+    def begin_turn(self) -> None:
+        """Force the detector into an active turn without waiting for the
+        energy gate — used when a wake word has already opened the turn and
+        the captured pre-roll is being injected. The turn then ends on the
+        normal silence / max-duration rules in ``process``."""
+        self.speech_active = True
+        self._candidate_ms = self.min_speech_ms
+        self._silence_ms = 0.0
+        self._turn_ms = self.min_speech_ms
+
     def process(
         self,
         level_dbfs: float,

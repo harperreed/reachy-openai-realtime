@@ -22,7 +22,7 @@ from openai.types.realtime import (
 )
 
 from .audio.capture import AudioPipelineStalled, AudioRecoveryLadder, CaptureWorker
-from .audio.fanout import AudioSubscription
+from .audio.fanout import AudioFrame, AudioSubscription
 from .audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
 from .config import (
     AppConfig,
@@ -144,6 +144,8 @@ class RealtimeRobotSession:
         capture_camera_jpeg: Callable[[], bytes | None] | None = None,
         memory: MemoryManager | None = None,
         nap: NapConsolidator | None = None,
+        pending_wake_audio: list[AudioFrame] | None = None,
+        on_session_ready: Callable[[], None] | None = None,
     ) -> None:
         self.robot = robot
         self.motion = motion
@@ -161,6 +163,13 @@ class RealtimeRobotSession:
         self._speaker = SpeakerWorker(self.robot.media, on_write=self._on_speaker_write)
         self._playback_io_lock = asyncio.Lock()
         self._greeting_sent = False
+        self._pending_wake_audio = pending_wake_audio
+        self._on_session_ready = on_session_ready
+        self._wake_ready = False
+        # In wake mode the live mic subscription must hold the whole connect
+        # window (spec §16/§17) so the user's question isn't dropped before
+        # session.updated; bound it at max_wake_buffer_seconds (spec §19).
+        self._wake_realtime_buffer_ms = float(self.config.max_wake_buffer_seconds) * 1000.0
         self.fsm = SessionStateMachine(on_transition=self._on_fsm_transition)
         self._response_generation_done = True
         self._speaker_busy_until = 0.0
@@ -227,7 +236,14 @@ class RealtimeRobotSession:
             self.status.record_event("response.first_audio_played")
 
     async def run(self, stop_event: Any) -> SessionOutcome:
-        self._audio = self._capture.subscribe("realtime")
+        self._audio = self._capture.subscribe(
+            "realtime",
+            max_buffer_ms=(
+                self._wake_realtime_buffer_ms
+                if self._pending_wake_audio is not None
+                else None
+            ),
+        )
         self.status.record_event("audio.capture.started")
         self._speaker.start()
         self.status.record_event("audio.playback.started")
@@ -404,6 +420,11 @@ class RealtimeRobotSession:
     def _listening_params(self) -> dict[str, str]:
         return {"language": language_option(self._current_language()).label}
 
+    def _should_send_greeting(self) -> bool:
+        # No boot greeting when a wake utterance is about to be injected — the
+        # robot answers that instead of talking over it (spec §10).
+        return not self._greeting_sent and self._pending_wake_audio is None
+
     async def _record_loop(self, stop_event: Any) -> None:
         source_rate = self.robot.media.get_input_audio_samplerate()
         microphone_ready = False
@@ -441,6 +462,40 @@ class RealtimeRobotSession:
                     f"マイク入力を開始しました（{source_rate} Hz）",
                     key="event_mic_started",
                     params={"rate": source_rate},
+                )
+            # Wake-turn seeding (spec §10): inject the captured "hey reachy"
+            # pre-roll as the opening of the first user turn — exactly once,
+            # and only once session.updated has set the input format
+            # (_wake_ready). Live frames are held until then so nothing precedes
+            # the wake audio in the turn.
+            if self._pending_wake_audio is not None:
+                if not self._wake_ready:
+                    continue
+                for wake_frame in self._pending_wake_audio:
+                    wake_mono, _wch, _wlv = select_mono_float32(wake_frame.samples)
+                    wake_audio = resample_linear(
+                        wake_mono, wake_frame.sample_rate, self.config.input_rate
+                    )
+                    wake_encoded = base64.b64encode(
+                        float32_to_pcm16(wake_audio).tobytes()
+                    ).decode("ascii")
+                    await self._append_input_audio(wake_encoded)
+                    self.status.record_audio_sent()
+                self._pending_wake_audio = None
+                pre_roll.clear()
+                pre_roll_ms = 0.0
+                self._vad.begin_turn()
+                self.fsm.transition(SessionState.USER_SPEAKING, reason="wake_turn")
+                self.status.record_event("vad.started", reason="wake_turn")
+                self.motion.set_listening_enabled(True)
+                self.motion.set_idle_enabled(False)
+                self._start_camera_capture()
+                self.status.set_phase(
+                    "user_speaking",
+                    "音声を聞いています",
+                    connected=True,
+                    event=True,
+                    detail_key="detail_user_speaking",
                 )
             mono, selected_channel, channel_levels = select_mono_float32(sample)
             dbfs = audio_level_dbfs(mono)
@@ -862,7 +917,10 @@ class RealtimeRobotSession:
                     detail_key="detail_listening_connected",
                     detail_params=self._listening_params(),
                 )
-                if not self._greeting_sent:
+                self._wake_ready = True
+                if self._on_session_ready is not None:
+                    self._on_session_ready()
+                if self._should_send_greeting():
                     self._greeting_sent = True
                     self.fsm.transition(SessionState.WAITING_RESPONSE, reason="greeting_requested")
                     self._response_generation_done = False

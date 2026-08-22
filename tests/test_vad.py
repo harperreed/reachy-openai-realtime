@@ -100,3 +100,24 @@ def test_energy_vad_forces_a_maximum_turn() -> None:
 
     assert decisions[-1].stopped
     assert decisions[-1].reason == "maximum"
+
+
+def test_begin_turn_forces_active_turn_without_energy_gate() -> None:
+    vad = EnergyTurnDetector()
+    assert vad.speech_active is False
+    vad.begin_turn()
+    assert vad.speech_active is True
+    # Already active: a quiet frame neither re-fires "started" nor ends the
+    # turn before the silence threshold.
+    decision = vad.process(-70.0, 20.0)
+    assert decision.started is False
+    assert decision.stopped is False
+
+
+def test_begin_turn_ends_on_sustained_silence() -> None:
+    vad = EnergyTurnDetector()
+    vad.begin_turn()
+    # 40 * 20ms = 800ms == end_silence_ms; allow a couple extra frames.
+    decisions = [vad.process(-70.0, 20.0) for _ in range(42)]
+    assert any(d.stopped and d.reason == "silence" for d in decisions)
+    assert vad.speech_active is False
