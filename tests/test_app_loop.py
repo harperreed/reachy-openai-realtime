@@ -120,6 +120,7 @@ def test_app_loop_continues_after_audio_pipeline_stalled(tmp_path, monkeypatch) 
     # --- environment setup ---------------------------------------------------
     monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-approop")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_ENABLED", "0")
 
     # --- app object ----------------------------------------------------------
     app = ReachyOpenaiRealtime()
@@ -237,6 +238,7 @@ def test_escalation_fires_and_loop_honors_stop_event(tmp_path, monkeypatch) -> N
     # --- environment setup ---------------------------------------------------
     monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-escalation")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_ENABLED", "0")
 
     # --- collapse real waits -------------------------------------------------
     # ESCALATION_PAUSE_SECONDS: patch in main's namespace so stop_event.wait() returns fast.
@@ -296,3 +298,53 @@ def test_escalation_fires_and_loop_honors_stop_event(tmp_path, monkeypatch) -> N
 
     # --- assertion: stop_event was honored (loop exited) --------------------
     assert stop_event.is_set(), "stop_event was never set — loop may not have continued past escalation"
+
+
+def test_app_loop_wake_enabled_runs_presence_manager(tmp_path, monkeypatch) -> None:
+    """With wake enabled, run() builds a PresenceManager and hands it the loop."""
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-wake")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_ENABLED", "1")
+    monkeypatch.setattr("reachy_openai_realtime.main.time.sleep", lambda _: None)
+
+    fake_recorder = FakeRecorder()
+    fake_recorder.close = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "reachy_openai_realtime.main.EventRecorder", lambda *_a, **_k: fake_recorder
+    )
+    # Never touch the network; the detector's identity is irrelevant to this test.
+    monkeypatch.setattr(ReachyOpenaiRealtime, "_build_wake_detector", lambda self, config: None)
+
+    stop_event = threading.Event()
+    built: dict[str, Any] = {}
+
+    class StubPresence:
+        def __init__(self, **kwargs: Any) -> None:
+            built["kwargs"] = kwargs
+
+        def run(self, stop_event_arg: Any) -> None:
+            built["ran"] = True
+            stop_event_arg.set()
+
+    monkeypatch.setattr("reachy_openai_realtime.main.PresenceManager", StubPresence)
+
+    app = ReachyOpenaiRealtime()
+    robot = FakeRobot()
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            app.run(robot, stop_event)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=_run, name="wake-app-loop-test", daemon=True)
+    t.start()
+    t.join(timeout=10.0)
+
+    assert not t.is_alive(), "app.run() did not finish within 10 s — possible hang"
+    assert not errors, f"app.run() raised unexpectedly: {errors}"
+    assert built.get("ran") is True, "PresenceManager.run() was not called"
+    assert built["kwargs"]["detector"] is None
+    assert built["kwargs"]["capture"] is not None
+    assert app._presence is None  # cleared in the run() finally

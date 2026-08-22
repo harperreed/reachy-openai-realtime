@@ -7,6 +7,7 @@ import threading
 import time
 from importlib.metadata import PackageNotFoundError, version
 from logging.handlers import RotatingFileHandler
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -16,6 +17,12 @@ from reachy_mini import ReachyMini, ReachyMiniApp
 from .audio.capture import AudioPipelineStalled, CaptureWorker
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
+from .presence.manager import PresenceManager
+from .wakeword.edge_impulse import EdgeImpulseWakeWordDetector
+from .wakeword.model_download import WakeModelError, ensure_wake_model
+
+if TYPE_CHECKING:
+    from .wakeword.base import WakeWordDetector
 from .memory.manager import MemoryManager, MemoryUnavailableError, UnknownMemoryIdError
 from .memory.nap import NapConsolidator, build_openai_summarizer
 from .memory.store import MemoryStore
@@ -95,6 +102,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
         self._language = initial_config.language
         self.runtime_status = RuntimeStatus(UsageTracker(usage_path()))
         self.memory_manager: MemoryManager | None = None
+        self._presence: PresenceManager | None = None
 
         assert self.settings_app is not None
 
@@ -302,6 +310,20 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 return {"ok": False, "error": "memory unavailable"}
             return {"ok": True}
 
+        @self.settings_app.post("/api/presence/wake")
+        async def presence_wake():
+            manager = self._presence
+            if manager is None:
+                return {"ok": False, "error": "wake word not enabled"}
+            return manager.request_wake()
+
+        @self.settings_app.post("/api/presence/sleep")
+        async def presence_sleep():
+            manager = self._presence
+            if manager is None:
+                return {"ok": False, "error": "wake word not enabled"}
+            return manager.request_sleep()
+
     @property
     def status(self) -> RuntimeStatus:
         return self.runtime_status
@@ -309,6 +331,35 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
     def _current_language(self) -> str:
         with self._language_lock:
             return self._language
+
+    def _build_wake_detector(self, config: AppConfig) -> WakeWordDetector | None:
+        """Provision the wake-word detector, or None if it can't be built.
+
+        A missing or unbuildable model is not fatal: the presence manager boots
+        to ERROR and still honors a manual wake from the dashboard (spec §21).
+        """
+        if config.wake_backend != "edge_impulse":
+            self.runtime_status.add_event(
+                f"未知のウェイクワードバックエンドです: {config.wake_backend}",
+                level="warning",
+                key="event_wake_backend_unknown",
+                params={"backend": config.wake_backend},
+            )
+            return None
+        try:
+            model_path = ensure_wake_model()
+            return EdgeImpulseWakeWordDetector(str(model_path), threshold=config.wake_threshold)
+        except WakeModelError as error:
+            self.runtime_status.add_event(
+                "ウェイクワードモデルを取得できませんでした",
+                level="warning",
+                key="event_wake_model_unavailable",
+            )
+            logger.warning("wake model unavailable: %s", error)
+            return None
+        except Exception:
+            logger.exception("failed to build wake detector")
+            return None
 
     def _is_camera_enabled(self) -> bool:
         with self._camera_lock:
@@ -437,74 +488,110 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
         capture = CaptureWorker(reachy_mini.media)
         capture.start()
         try:
-            while not stop_event.is_set():
-                config = AppConfig.from_env()
-                session = RealtimeRobotSession(
-                    reachy_mini,
-                    motion,
-                    config,
-                    self.runtime_status,
+            if boot_config.wake_enabled:
+                detector = self._build_wake_detector(boot_config)
+
+                def session_factory(*, pending_wake_audio=None, on_session_ready=None):
+                    return RealtimeRobotSession(
+                        reachy_mini,
+                        motion,
+                        AppConfig.from_env(),
+                        self.runtime_status,
+                        capture,
+                        language_provider=self._current_language,
+                        camera_enabled=self._is_camera_enabled,
+                        capture_camera_jpeg=self._capture_camera_frame,
+                        memory=memory_manager,
+                        nap=nap,
+                        pending_wake_audio=pending_wake_audio,
+                        on_session_ready=on_session_ready,
+                    )
+
+                presence = PresenceManager(
                     capture=capture,
-                    language_provider=self._current_language,
-                    camera_enabled=self._is_camera_enabled,
-                    capture_camera_jpeg=self._capture_camera_frame,
-                    memory=memory_manager,
-                    nap=nap,
+                    detector=detector,
+                    motion=motion,
+                    session_factory=session_factory,
+                    status=self.runtime_status,
+                    history_seconds=boot_config.wake_history_seconds,
+                    pre_roll_seconds=boot_config.wake_preroll_ms / 1000.0,
+                    debounce_seconds=boot_config.wake_debounce_seconds,
+                    boot_motion_enabled=boot_config.boot_motion_enabled,
+                    wake_motion_enabled=boot_config.wake_motion_enabled,
+                    on_transition=self.runtime_status.set_presence,
                 )
-                try:
-                    outcome = asyncio.run(session.run(stop_event))
-                except AudioPipelineStalled:
-                    self.runtime_status.add_event("audio pipeline stalled; restarting app session", level="warning")
-                    escalate = budget.record_restart(time.monotonic())
-                    if escalate:
-                        self.runtime_status.record_event(
-                            "supervisor.escalated", restarts=budget.limit, window_seconds=budget.window_seconds
-                        )
+                self._presence = presence
+                presence.run(stop_event)
+            else:
+                while not stop_event.is_set():
+                    config = AppConfig.from_env()
+                    session = RealtimeRobotSession(
+                        reachy_mini,
+                        motion,
+                        config,
+                        self.runtime_status,
+                        capture=capture,
+                        language_provider=self._current_language,
+                        camera_enabled=self._is_camera_enabled,
+                        capture_camera_jpeg=self._capture_camera_frame,
+                        memory=memory_manager,
+                        nap=nap,
+                    )
                     try:
-                        reachy_mini.media.stop_playing()
-                        reachy_mini.media.stop_recording()
-                        reachy_mini.media.start_recording()
-                        reachy_mini.media.start_playing()
-                    except Exception:
-                        logger.exception("media re-init after stall failed")
-                    if escalate:
-                        stop_event.wait(ESCALATION_PAUSE_SECONDS)
-                    continue
-                except Exception as exc:
-                    logger.exception("Realtime session stopped with an error")
-                    self.runtime_status.record_error(exc)
-                    escalate = budget.record_restart(time.monotonic())
-                    if escalate:
-                        self.runtime_status.record_event(
-                            "supervisor.escalated", restarts=budget.limit, window_seconds=budget.window_seconds
-                        )
+                        outcome = asyncio.run(session.run(stop_event))
+                    except AudioPipelineStalled:
+                        self.runtime_status.add_event("audio pipeline stalled; restarting app session", level="warning")
+                        escalate = budget.record_restart(time.monotonic())
+                        if escalate:
+                            self.runtime_status.record_event(
+                                "supervisor.escalated", restarts=budget.limit, window_seconds=budget.window_seconds
+                            )
                         try:
                             reachy_mini.media.stop_playing()
                             reachy_mini.media.stop_recording()
                             reachy_mini.media.start_recording()
                             reachy_mini.media.start_playing()
                         except Exception:
-                            logger.exception("media re-init during escalation failed")
-                        stop_event.wait(ESCALATION_PAUSE_SECONDS)
-                    elif stop_event.wait(5.0):
-                        break
-                    self.runtime_status.set_phase(
-                        "reconnecting",
-                        "Realtimeセッションを再起動しています",
-                        connected=False,
-                        event=True,
-                        detail_key="detail_reconnecting",
-                    )
-                else:
-                    if outcome is SessionOutcome.FATAL_CONFIG:
-                        stale_fingerprint = (os.getenv("OPENAI_API_KEY", ""), config)
-                        while not stop_event.is_set():
-                            load_instance_env()
-                            current = (os.getenv("OPENAI_API_KEY", ""), AppConfig.from_env())
-                            if current != stale_fingerprint:
-                                break
-                            stop_event.wait(2.0)
+                            logger.exception("media re-init after stall failed")
+                        if escalate:
+                            stop_event.wait(ESCALATION_PAUSE_SECONDS)
+                        continue
+                    except Exception as exc:
+                        logger.exception("Realtime session stopped with an error")
+                        self.runtime_status.record_error(exc)
+                        escalate = budget.record_restart(time.monotonic())
+                        if escalate:
+                            self.runtime_status.record_event(
+                                "supervisor.escalated", restarts=budget.limit, window_seconds=budget.window_seconds
+                            )
+                            try:
+                                reachy_mini.media.stop_playing()
+                                reachy_mini.media.stop_recording()
+                                reachy_mini.media.start_recording()
+                                reachy_mini.media.start_playing()
+                            except Exception:
+                                logger.exception("media re-init during escalation failed")
+                            stop_event.wait(ESCALATION_PAUSE_SECONDS)
+                        elif stop_event.wait(5.0):
+                            break
+                        self.runtime_status.set_phase(
+                            "reconnecting",
+                            "Realtimeセッションを再起動しています",
+                            connected=False,
+                            event=True,
+                            detail_key="detail_reconnecting",
+                        )
+                    else:
+                        if outcome is SessionOutcome.FATAL_CONFIG:
+                            stale_fingerprint = (os.getenv("OPENAI_API_KEY", ""), config)
+                            while not stop_event.is_set():
+                                load_instance_env()
+                                current = (os.getenv("OPENAI_API_KEY", ""), AppConfig.from_env())
+                                if current != stale_fingerprint:
+                                    break
+                                stop_event.wait(2.0)
         finally:
+            self._presence = None
             capture.close()
             try:
                 reachy_mini.media.stop_recording()

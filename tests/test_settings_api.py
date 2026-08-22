@@ -77,6 +77,35 @@ def test_settings_api_rejects_short_key_without_echoing_it(tmp_path, monkeypatch
     assert "short" not in response.text
 
 
+def test_presence_endpoints_forward_to_manager_and_guard_when_absent(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path / "config"))
+    app = ReachyOpenaiRealtime()
+    assert app.settings_app is not None
+    client = TestClient(app.settings_app)
+
+    # No presence manager (always-connected mode, or before boot): guarded.
+    absent = client.post("/api/presence/wake")
+    assert absent.status_code == 200
+    assert absent.json() == {"ok": False, "error": "wake word not enabled"}
+
+    class FakePresence:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def request_wake(self) -> dict:
+            self.calls.append("wake")
+            return {"ok": True, "state": "waking"}
+
+        def request_sleep(self) -> dict:
+            self.calls.append("sleep")
+            return {"ok": True, "state": "sleeping"}
+
+    app._presence = FakePresence()
+    assert client.post("/api/presence/wake").json() == {"ok": True, "state": "waking"}
+    assert client.post("/api/presence/sleep").json() == {"ok": True, "state": "sleeping"}
+    assert app._presence.calls == ["wake", "sleep"]
+
+
 def test_settings_changed_events_fire_and_never_leak_key(tmp_path, monkeypatch) -> None:
     """settings.changed fires for language, camera, api-key set/delete; key never in fields."""
     monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path / "config"))
