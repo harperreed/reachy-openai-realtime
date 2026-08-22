@@ -53,6 +53,10 @@ def log_path() -> Path:
     return config_dir() / "application.log"
 
 
+def models_dir() -> Path:
+    return config_dir() / "models"
+
+
 def prepare_config_dir() -> Path:
     target_dir = config_dir()
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
