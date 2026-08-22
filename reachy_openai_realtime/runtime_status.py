@@ -37,6 +37,7 @@ class RuntimeStatus:
         self._last_user: str | None = None
         self._last_assistant: str | None = None
         self._last_motion: str | None = None
+        self._presence_state: str | None = None
         self._mic_dbfs: float | None = None
         self._mic_peak_dbfs: float | None = None
         self._mic_channel_dbfs: list[float] = []
@@ -72,6 +73,17 @@ class RuntimeStatus:
         """Forward a structured event to the flight recorder, if one is attached."""
         if self._recorder is not None:
             self._recorder.record(event, **fields)
+
+    def set_presence(self, old: Any, new: Any, reason: str) -> None:
+        """Mirror the presence manager's current state into the snapshot.
+
+        Wired as the manager's on_transition hook. The manager already records
+        the `presence.transition` event, so this only tracks state for display.
+        """
+        state_name = getattr(new, "name", str(new)).lower()
+        with self._lock:
+            self._presence_state = state_name
+            self._updated_at = _now()
 
     def set_phase(
         self,
@@ -387,6 +399,7 @@ class RuntimeStatus:
                 "detail_key": self._detail_key,
                 "detail_params": dict(self._detail_params),
                 "connected": self._connected,
+                "presence": self._presence_state,
                 "last_error": self._last_error,
                 "last_user": self._last_user,
                 "last_assistant": self._last_assistant,

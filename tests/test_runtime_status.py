@@ -192,6 +192,18 @@ def test_snapshot_includes_cumulative_response_usage() -> None:
     assert snapshot["events"][0]["key"] == "event_usage_recorded"
 
 
+def test_set_presence_updates_snapshot():
+    from reachy_openai_realtime.presence.states import PresenceState
+
+    status = RuntimeStatus()
+    status.set_presence(PresenceState.SLEEPING, PresenceState.WAKING, "wake_word")
+    assert status.snapshot()["presence"] == "waking"
+
+
+def test_presence_defaults_to_none_before_any_transition():
+    assert RuntimeStatus().snapshot()["presence"] is None
+
+
 def test_record_audio_sample_exposes_vad_backend() -> None:
     status = RuntimeStatus()
     # Default: no vad_backend kwarg — should surface "energy" in snapshot

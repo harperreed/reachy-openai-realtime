@@ -136,3 +136,28 @@ def test_wake_settings_are_clamped_to_spec_ranges():
 def test_wake_threshold_zero_or_negative_falls_back_to_default():
     assert AppConfig(wake_threshold=0.0).wake_threshold == 0.70
     assert AppConfig(wake_threshold=-1.0).wake_threshold == 0.70
+
+
+def test_from_env_parses_wake_settings(monkeypatch):
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_ENABLED", "0")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_THRESHOLD", "0.9")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_PREROLL_MS", "250")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_PHRASE", "hey robot")
+    config = AppConfig.from_env()
+    assert config.wake_enabled is False
+    assert config.wake_threshold == 0.9
+    assert config.wake_preroll_ms == 250
+    assert config.wake_phrase == "hey robot"
+
+
+def test_from_env_wake_bad_numbers_fall_back_to_defaults(monkeypatch):
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_THRESHOLD", "not-a-number")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_PREROLL_MS", "garbage")
+    config = AppConfig.from_env()
+    assert config.wake_threshold == 0.70
+    assert config.wake_preroll_ms == 400
+
+
+def test_from_env_wake_enabled_defaults_true_when_unset(monkeypatch):
+    monkeypatch.delenv("REACHY_OPENAI_REALTIME_WAKE_ENABLED", raising=False)
+    assert AppConfig.from_env().wake_enabled is True

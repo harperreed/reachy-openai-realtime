@@ -32,6 +32,33 @@ def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "off"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def language_option(code: str) -> LanguageOption:
     try:
         return _LANGUAGES_BY_CODE[code.strip().lower()]
@@ -160,4 +187,21 @@ class AppConfig:
             memory_enabled=memory_enabled,
             memory_write_policy=memory_write_policy,
             memory_nap_model=memory_nap_model,
+            wake_enabled=_env_bool("REACHY_OPENAI_REALTIME_WAKE_ENABLED", cls.wake_enabled),
+            wake_backend=os.getenv("REACHY_OPENAI_REALTIME_WAKE_BACKEND", cls.wake_backend),
+            wake_phrase=os.getenv("REACHY_OPENAI_REALTIME_WAKE_PHRASE", cls.wake_phrase),
+            wake_model_path=os.getenv("REACHY_OPENAI_REALTIME_WAKE_MODEL_PATH", cls.wake_model_path),
+            wake_threshold=_env_float("REACHY_OPENAI_REALTIME_WAKE_THRESHOLD", cls.wake_threshold),
+            wake_debounce_seconds=_env_float(
+                "REACHY_OPENAI_REALTIME_WAKE_DEBOUNCE_SECONDS", cls.wake_debounce_seconds
+            ),
+            wake_history_seconds=_env_float(
+                "REACHY_OPENAI_REALTIME_WAKE_HISTORY_SECONDS", cls.wake_history_seconds
+            ),
+            wake_preroll_ms=_env_int("REACHY_OPENAI_REALTIME_WAKE_PREROLL_MS", cls.wake_preroll_ms),
+            max_wake_buffer_seconds=_env_int(
+                "REACHY_OPENAI_REALTIME_WAKE_MAX_BUFFER_SECONDS", cls.max_wake_buffer_seconds
+            ),
+            wake_motion_enabled=_env_bool("REACHY_OPENAI_REALTIME_WAKE_MOTION", cls.wake_motion_enabled),
+            boot_motion_enabled=_env_bool("REACHY_OPENAI_REALTIME_BOOT_MOTION", cls.boot_motion_enabled),
         )
