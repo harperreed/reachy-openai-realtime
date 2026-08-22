@@ -124,3 +124,21 @@
   every failure (network, disk, chmod, `os.replace`, hash mismatch) in `WakeModelError` and leaves
   no partial behind. The lone OSError it still lets through raw is `directory.mkdir`, which
   `_build_wake_detector`'s broad except neutralizes into graceful degradation.
+- **Setting the session stop flag does NOT tear down an actively-engaged Realtime session** (FIXED
+  on branch `fix-session-sleep-teardown`, not yet deployed) — the bug: `POST /api/presence/sleep`
+  could not reliably sleep a robot mid-conversation. `_run_connection` blocked on a bare
+  `await asyncio.gather(*tasks)` over six tasks; two — `_watchdog_loop` (no stop param) and
+  `_supervisor_loop` (`while True`) — never check the stop flag, and `gather(return_exceptions=False)`
+  unblocks only when ALL tasks finish OR one raises. The stop-honoring tasks (`_record_loop`,
+  `_event_loop`) RETURN rather than raise, so flipping `session_stop`/`app_stop` never unblocked the
+  gather. Teardown fired only when the OpenAI connection closed (event-loop's `async for` raises) or
+  the supervisor's 120 s FSM-inactivity tripped (`session/supervisor.py`). While ambient noise kept
+  the FSM transitioning and the socket alive, NEITHER fired → sleep returned `{ok:true,state:sleeping}`
+  but the robot stayed AWAKE, talking to the empty room and burning tokens. Manual app-stop "works"
+  only because the daemon SIGKILLs the process after ~20 s, hiding the graceful-teardown failure.
+  The fix: `_run_connection` now awaits `_await_tasks_or_stop(tasks, stop_event)`, which races the
+  gathered task group against a stop-poller and returns the instant the flag flips (~50 ms); the
+  existing `finally` then cancels the still-running loops. Wait-for-all / first-exception semantics
+  are preserved, so the reconnect path is untouched (`tests/test_realtime_teardown.py`). Recovery on
+  a pre-fix build: `POST /api/apps/stop-current-app`. Found on night robot 2026-08-22 (manual wake
+  worked; manual sleep hung; had to stop the app).

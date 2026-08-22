@@ -300,6 +300,31 @@ class RealtimeRobotSession:
                 return
             await asyncio.sleep(min(0.2, remaining))
 
+    async def _await_stop(self, stop_event: Any) -> None:
+        """Resolve as soon as the stop flag flips. The flag is a threading.Event
+        with no awaitable wait, so poll it — same idiom as _sleep_unless_stopped."""
+        while not stop_event.is_set():
+            await asyncio.sleep(0.05)
+
+    async def _await_tasks_or_stop(self, tasks: list[asyncio.Task], stop_event: Any) -> None:
+        """Await the connection's task group, but return the moment the stop flag
+        flips even while tasks are still running. _watchdog_loop and
+        _supervisor_loop never watch the stop flag, so a bare gather() blocks
+        teardown until the socket drops — which leaves the robot awake after a
+        stop. The caller's finally cancels whatever is still running. The task
+        group keeps its wait-for-all-or-first-exception semantics, so a task that
+        ends on its own still surfaces here and run()'s reconnect path is intact."""
+        work = asyncio.gather(*tasks)
+        stop_waiter = asyncio.ensure_future(self._await_stop(stop_event))
+        try:
+            await asyncio.wait({work, stop_waiter}, return_when=asyncio.FIRST_COMPLETED)
+            if work.done():
+                work.result()  # re-raise the first task exception, if any
+        finally:
+            stop_waiter.cancel()
+            work.cancel()
+            await asyncio.gather(stop_waiter, work, return_exceptions=True)
+
     async def _run_connection(self, stop_event: Any) -> None:
         self._register_motion_tools()
         async with self.client.realtime.connect(model=self.config.model) as connection:
@@ -340,7 +365,7 @@ class RealtimeRobotSession:
             if self.nap is not None and self._memory_tools_active:
                 tasks.append(asyncio.create_task(self.nap.run(self._nap_idle), name="nap-loop"))
             try:
-                await asyncio.gather(*tasks)
+                await self._await_tasks_or_stop(tasks, stop_event)
             finally:
                 if self._doa_poller is not None:
                     self._doa_poller.close()
