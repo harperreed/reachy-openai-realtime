@@ -468,3 +468,67 @@ def test_heartbeat_exception_does_not_kill_worker() -> None:
     assert manager.submit("nod", {"count": 1})["ok"] is True
     assert wait_until(lambda: len(robot.targets) > 0)
     manager.close()
+
+
+def test_wake_acknowledge_perks_up_without_touching_media_pipeline() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    manager.start()
+    try:
+        result = manager.wake_acknowledge()
+        assert result == {"ok": True, "motion": "wake_acknowledge"}
+        # Perk-up is a two-segment gesture (lift, then settle).
+        assert wait_until(lambda: len(robot.targets) >= 2)
+    finally:
+        manager.close()
+    # A wake gesture must never tear down the wireless media pipeline.
+    assert robot.cancelled is False
+
+
+def test_sleeping_pose_lowers_head_and_relaxes_antennas() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    manager.start()
+    try:
+        result = manager.sleeping_pose()
+        assert result == {"ok": True, "motion": "sleeping_pose"}
+        assert wait_until(lambda: len(robot.targets) >= 1)
+    finally:
+        manager.close()
+    # MotionManager.close() appends a shutdown recenter (antennas [0, 0]) as the final
+    # target, so the sleeping pose is not targets[-1]. Identify it by its own antenna
+    # signature (deg2rad([-20, 20]) = drooped outward, left negative / right positive),
+    # independent of ordering or any ambient idle tick before close().
+    assert any(
+        t.get("antennas") is not None and np.allclose(t["antennas"], np.deg2rad([-20.0, 20.0]))
+        for t in robot.targets
+    ), "sleeping_pose should command drooped-outward antennas (deg2rad([-20, 20]))"
+    # App-level rest pose, not the hardware tuck.
+    assert robot.cancelled is False
+
+
+def test_boot_motion_looks_around_then_centers() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    manager.start()
+    try:
+        result = manager.boot_motion()
+        assert result == {"ok": True, "motion": "boot_motion"}
+        # Look up, right, left, then center = four segments.
+        assert wait_until(lambda: len(robot.targets) >= 4)
+    finally:
+        manager.close()
+    assert robot.cancelled is False
+
+
+def test_connection_failed_motion_shakes_then_droops() -> None:
+    robot = FakeRobot()
+    manager = MotionManager(robot)
+    manager.start()
+    try:
+        result = manager.connection_failed_motion()
+        assert result == {"ok": True, "motion": "connection_failed_motion"}
+        assert wait_until(lambda: len(robot.targets) >= 3)
+    finally:
+        manager.close()
+    assert robot.cancelled is False

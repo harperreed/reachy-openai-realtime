@@ -659,3 +659,64 @@ class MotionManager:
             duration=duration,
             body_yaw=None,
         )
+
+    # --- Presence lifecycle gestures (spec §11) -------------------------------
+
+    def wake_acknowledge(self) -> dict[str, Any]:
+        """Quick 'I heard you' perk-up when a wake word fires."""
+        return self._start_activity(
+            "wake_acknowledge", MotionPriority.GESTURE, self._run_wake_acknowledge
+        )
+
+    def sleeping_pose(self) -> dict[str, Any]:
+        """Settle into an app-level resting pose (head lowered, antennas
+        relaxed). NOT the hardware tuck — the media pipeline stays up."""
+        return self._start_activity(
+            "sleeping_pose", MotionPriority.GESTURE, self._run_sleeping_pose
+        )
+
+    def boot_motion(self) -> dict[str, Any]:
+        """Gentle wake-from-boot look-around, ending centered on neutral."""
+        return self._start_activity(
+            "boot_motion", MotionPriority.GESTURE, self._run_boot_motion
+        )
+
+    def connection_failed_motion(self) -> dict[str, Any]:
+        """A small 'no' shake and a disappointed droop when a session fails
+        to connect after a wake word."""
+        return self._start_activity(
+            "connection_failed_motion",
+            MotionPriority.GESTURE,
+            self._run_connection_failed_motion,
+        )
+
+    def _run_wake_acknowledge(self) -> None:
+        self._goto_relative(-12, 0, [30, -30], 0.3)  # lift head, antennas up (happy)
+        if self._cancel_event.is_set():
+            return
+        self._goto_relative(0, 0, [0, 0], 0.4)  # settle back to neutral
+
+    def _run_sleeping_pose(self) -> None:
+        # Absolute rest pose: head down (positive pitch), antennas drooped.
+        self._goto_absolute(16, 0, [-20, 20], 1.0)
+
+    def _run_boot_motion(self) -> None:
+        self._goto_absolute(-8, 0, [18, -18], 0.5)  # look up, antennas perk
+        if self._cancel_event.is_set():
+            return
+        self._goto_absolute(0, 14, [8, -8], 0.4)  # glance right
+        if self._cancel_event.is_set():
+            return
+        self._goto_absolute(0, -14, [8, -8], 0.4)  # glance left
+        if self._cancel_event.is_set():
+            return
+        self._goto_absolute(0, 0, [0, 0], 0.5)  # center on neutral
+
+    def _run_connection_failed_motion(self) -> None:
+        self._goto_relative(0, 14, None, 0.2)  # shake: right
+        if self._cancel_event.is_set():
+            return
+        self._goto_relative(0, -14, None, 0.2)  # shake: left
+        if self._cancel_event.is_set():
+            return
+        self._goto_absolute(12, 0, [-16, 16], 0.6)  # droop to a disappointed rest
