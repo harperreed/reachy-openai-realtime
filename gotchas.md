@@ -85,3 +85,42 @@
   `disabled`) — one call is a full soft shutdown once the app is stopped. `POST
   /api/daemon/stop` requires `?goto_sleep=true|false` (422 without it), mirroring
   `daemon/start?wake_up=`. Sleep pose signature: head z ≈ −47mm, pitch ≈ 0.47 rad.
+- **Wake word ("hey reachy") is Phase 2, issue #12.** Spec
+  `docs/superpowers/specs/2026-08-21-wake-word-design.md`, plan
+  `docs/superpowers/plans/2026-08-21-wake-word.md`. While asleep a `WakeWordWorker` runs an Edge
+  Impulse `.eim` classifier and a `PresenceManager` owns BOOTING→SLEEPING→WAKING→AWAKE (+ERROR);
+  on wake it opens one RealtimeRobotSession seeded with captured pre-roll audio and tears it down
+  on sleep. Code under `reachy_openai_realtime/presence/`, `/wakeword/`, `/audio/`. `wake_enabled`
+  defaults TRUE. Env vars are `REACHY_OPENAI_REALTIME_WAKE_*`; manual control is `POST
+  /api/presence/wake` and `/api/presence/sleep`.
+- **`main.py:run()` has TWO mutually exclusive paths.** `wake_enabled=true` (default) runs the
+  PresenceManager; `wake_enabled=false` runs the original Phase-1 always-connected supervisor loop
+  (preserved byte-for-byte). `_build_wake_detector` returns None on ANY failure (unknown backend,
+  WakeModelError, or any other Exception, which it logs), and a None detector still boots: the
+  manager goes SLEEPING then ERROR and stays reachable for manual wake. Wake setup NEVER crashes
+  startup — don't add a raise that would.
+- **Presence emits ONE `presence.transition` event, not the five names spec §27 lists.** It
+  carries `from_state`/`to_state` (the edge), matching the `fsm.transition` convention, and
+  `to_state` is greppable. Do NOT split it back into five `presence.*` events — that was a
+  deliberate one-source-of-truth call (`presence/manager.py:_handle_transition`). Grepping for
+  `presence.sleeping` etc. finds nothing by design.
+- **Presence lock order: `_lock` before the state-machine lock, never the reverse.**
+  `PresenceStateMachine.transition()` releases the state lock BEFORE firing its callback, and
+  `_on_wake`/`request_wake` call `transition()` while holding `_lock`, so `_handle_transition`
+  runs with `_lock` held by the same thread. Anything wired into the transition hook (event
+  recording, `RuntimeStatus.set_presence`) must NOT take `_lock` or it self-deadlocks.
+- **Wake audio is memory-only and never logged.** The pre-roll ring buffer (`AudioRingBuffer`)
+  holds a few seconds of frames in RAM and is never written to disk; sleeping audio is never
+  logged; `debug_capture_wake_audio` defaults false; no raw mic audio appears in any HTTP or UI
+  surface. Nothing streams to OpenAI until a wake fires. This is a spec privacy boundary — keep it.
+- **One microphone owner: `CaptureWorker` fans out to bounded drop-oldest subscriptions.** The
+  realtime session and the wake worker are two `subscribe(name, max_buffer_ms=…)` consumers of the
+  single CaptureWorker (`audio/capture.py`); a slow consumer drops its own oldest frames and can't
+  stall capture or starve the other. Add consumers via subscribe/unsubscribe, never a second mic
+  reader.
+- **The wake `.eim` model is fetched at runtime, not vendored.** `wakeword/model_download.py` pins
+  one Hugging Face revision + size + sha256 (the Space has no redistribution license), so first
+  boot with wake enabled downloads ~13.5 MB into the config models dir. `ensure_wake_model` wraps
+  every failure (network, disk, chmod, `os.replace`, hash mismatch) in `WakeModelError` and leaves
+  no partial behind. The lone OSError it still lets through raw is `directory.mkdir`, which
+  `_build_wake_detector`'s broad except neutralizes into graceful degradation.
