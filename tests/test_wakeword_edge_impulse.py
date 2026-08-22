@@ -1,5 +1,6 @@
 import textwrap
 
+from reachy_openai_realtime.wakeword.base import WakeWordDetection
 from reachy_openai_realtime.wakeword.eim_runner import EimRunner
 
 FAKE_RUNNER = textwrap.dedent(
@@ -78,3 +79,10 @@ def test_close_is_idempotent(tmp_path):
     runner.start()
     runner.close()
     runner.close()  # must not raise
+
+
+def test_wake_word_detection_is_frozen_value():
+    detection = WakeWordDetection(phrase="hey reachy", score=0.91, detected_at=123.0)
+    assert (detection.phrase, detection.score, detection.detected_at) == ("hey reachy", 0.91, 123.0)
+    import dataclasses
+    assert dataclasses.is_dataclass(detection) and detection.__dataclass_params__.frozen
