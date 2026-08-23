@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# ABOUTME: Parses one app-status JSON object into a lifecycle-ready state.
+# ABOUTME: Accepts legacy Realtime-connected or healthy wake-armed sleeping modes.
+
+jq -er '
+    if has("connected") and .connected == true then "connected"
+    elif has("presence") and .presence == "sleeping"
+        and has("last_error") and .last_error == null then "sleeping"
+    else empty
+    end
+'

@@ -77,6 +77,9 @@
   `POST /api/move/play/wake_up` (confirm `/api/state/present_head_pose` z ≈ 0, not ≈ −47mm) →
   `POST /api/apps/start-app/...`. `daemon/start?wake_up=true` is a no-op if daemon state is
   already `running`; asleep = `backend_status.ready:false` + `motor_control_mode:"disabled"`.
+- **A healthy wake-enabled app starts with `connected:false` and `presence:"sleeping"`.**
+  `scripts/robot start`/`deploy` must accept either that wake-armed state or the legacy
+  `connected:true` state; waiting only for Realtime always times out after issue #12.
 - **`POST /api/apps/update/{app}` refuses while that app is running** ("Cannot update ... while
   it is running. Please stop it first."). Deploy order: `stop-current-app` → update job →
   verify awake → `start-app`. An update fired into an empty app slot works directly.

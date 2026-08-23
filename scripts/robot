@@ -12,6 +12,8 @@ set -u
 HOST="192.168.200.128"
 APP="reachy_openai_realtime"
 CURL_TIMEOUT=15
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+READY_STATE="$SCRIPT_DIR/robot-ready-state"
 
 usage() {
     cat <<EOF
@@ -20,7 +22,7 @@ usage: scripts/robot [-H host] <command>
 commands:
   status     Daemon, motors, head pose, app slot, and Realtime connection.
   shutdown   Stop the app, tuck the head into the shell (goto_sleep), motors off.
-  start      Wake the robot if asleep, then start the app and wait for Realtime.
+  start      Wake the robot if asleep, then start the app and wait until ready.
   restart    Stop the app, then run start.
   deploy     Stop the app, apply the pending update, then run start.
 
@@ -121,13 +123,30 @@ wake_robot() {
 
 start_app() {
     api POST "/api/apps/start-app/$APP" >/dev/null
-    echo "app: starting (Realtime connect takes 25-45s cold)"
-    wait_for "Realtime connection" 120 app_connected
-    echo "app: connected ($(curl -s -m 5 "$APPDASH/api/status" | scrub | jq -r '.phase // "?"'))"
+    echo "app: starting (wake setup or Realtime connect can take 25-45s cold)"
+    wait_for "app readiness" 120 app_ready || return 1
+    case "$APP_READY_MODE" in
+        connected)
+            echo "app: ready (connected, phase $(app_phase))" ;;
+        sleeping)
+            echo "app: ready (sleeping, wake armed)" ;;
+        *)
+            echo "error: app readiness state disappeared" >&2
+            return 1 ;;
+    esac
 }
-app_connected() {
-    [ "$(curl -s -m 5 "$APPDASH/api/status" | scrub | jq -r '.connected' 2>/dev/null)" = "true" ]
+app_status() { curl -fsS -m 5 "$APPDASH/api/status" | scrub; }
+app_phase() { app_status | jq -r '.phase // "?"' 2>/dev/null; }
+app_mode() { app_status | "$READY_STATE"; }
+APP_READY_MODE=""
+app_ready() {
+    APP_READY_MODE=$(app_mode) || {
+        APP_READY_MODE=""
+        return 1
+    }
+    [ -n "$APP_READY_MODE" ]
 }
+app_connected() { [ "$(app_mode)" = "connected" ]; }
 
 pose_label() {
     awk -v z="$1" 'BEGIN {
@@ -176,7 +195,7 @@ cmd_start() {
         echo "app: a stale slot is occupied -> clearing it first"
         stop_app
     fi
-    start_app
+    start_app || return 1
     echo "start complete"
 }
 

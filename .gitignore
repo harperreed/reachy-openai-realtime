@@ -14,3 +14,4 @@ secrets.*
 .venv/
 .pytest_cache/
 .ruff_cache/
+.scratch/
