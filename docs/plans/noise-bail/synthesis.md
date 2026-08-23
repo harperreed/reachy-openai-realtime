@@ -116,3 +116,44 @@ to feel deliberate rather than abrupt. It's the single UX knob and it's low-risk
 
 Keep **V3** in reserve: the strongest alternative signal, worth reaching for only
 if the DoA+duration heuristic proves too crude in practice.
+
+## Addendum — we are building V3 + the ceiling, not V1 (decided 2026-08-23)
+
+Reading the commit path before coding V1 showed its DoA+duration classifier is
+mechanically defeated on this robot, so V1's fast-bail signal is worthless:
+
+- **"DoA never `True` during the turn" fails.** The ReSpeaker fires
+  `speech_detected=True` on ~27% of ambient samples (live: 4/15). A committed
+  turn spans ~14 samples, so P(at least one `True`) ≈ 99%. Almost every noise
+  turn trips `_turn_had_doa_true` → read as human.
+- **"committed audio < 1500 ms" barely discriminates.** The VAD flushes a
+  pre-roll (≤350 ms) then appends every frame through the full 800 ms
+  trailing-silence countdown, so the floor for *any* committed turn is
+  ~1390 ms. The 1500 ms line sits right on top of every turn's minimum.
+
+The wall-clock ceiling (Nyx) never depended on the classifier, so it survives.
+The fix is to swap V1's broken signal for **V3's transcript signal**, which does
+not drift with room acoustics:
+
+- **Guarantee (free):** session wall clock, measured from session start so it
+  survives reconnects. Over the limit → set the stop flag → sleep. No
+  classification, so nothing can defeat it.
+- **Fast bail:** enable input transcription; a committed turn whose transcript
+  has no word characters is noise. N consecutive → set the stop flag → sleep.
+  Resets on any real transcript and on reconnect.
+
+Corrections to the panel's cost and classifier claims, verified in the SDK
+(openai 2.53.0) and the turn flow:
+
+- Pixel's "near zero cost — audio already billed" is **wrong**. The completed
+  event carries `usage` token/duration accounting; input transcription is a
+  separate metered pass that runs on *every* committed turn, not just garbage
+  ones. Small per turn, but real and always-on. It is an accepted cost of the
+  chosen option, not free.
+- Dropped Pixel's tier 3 ("≤3 chars, no Latin vowel"): it misclassifies short
+  CJK words ("好") as noise. Tiers 1–2 (empty / no `\w`) are Unicode-safe —
+  `\w` matches CJK — and the ceiling backstops whatever the classifier misses
+  (including Whisper hallucinating "you"/"thank you" on noise).
+
+This is the "Ceiling + transcript" build. V2's gate fix stays deferred to the
+live on-robot session, unchanged.
