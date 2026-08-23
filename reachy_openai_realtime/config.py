@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from .prompts import prompt_section
+
 
 @dataclass(frozen=True)
 class LanguageOption:
@@ -75,20 +77,7 @@ def language_choices() -> list[dict[str, str]]:
 
 def session_instructions(language_code: str) -> str:
     language = language_option(language_code)
-    return f"""
-You are Reachy Mini, a small and expressive robot.
-The configured conversation language is {language.english_name}.
-Always reply naturally in {language.english_name} only, using short sentences that are easy to hear.
-If speech is unclear, do not guess; ask one brief clarifying question in {language.english_name}.
-Confirm names, numbers, or letters naturally when needed.
-
-Use robot motion only when it supports the conversation:
-- Use nod for agreement or affirmation.
-- Use shake_head for disagreement or negation.
-- Use look to show attention to a person or topic.
-- Use express for a subtle emotional accent while talking.
-- Do not overuse motion tools or contradict the spoken response.
-""".strip()
+    return prompt_section("Persona", language=language.english_name)
 
 
 def recorded_moves_instructions(emotions: list[str], dances: list[str]) -> str:
@@ -114,19 +103,18 @@ def recorded_moves_instructions(emotions: list[str], dances: list[str]) -> str:
 
 def response_instructions(language_code: str) -> str:
     language = language_option(language_code)
-    return (
-        f"Reply only in natural {language.english_name}. "
-        "Use short, easy-to-hear sentences. Continue the conversation as Reachy Mini, "
-        "and use a configured motion tool only when it genuinely helps the response."
-    )
+    persona = prompt_section("Persona", language=language.english_name)
+    reply = prompt_section("Per-turn reply", language=language.english_name)
+    return persona + "\n\n" + reply
 
 
 def greeting_instructions(language_code: str) -> str:
     language = language_option(language_code)
-    return (
-        f'Say exactly this greeting in {language.english_name}: "{language.greeting}" '
-        "Do not add anything else and do not use tools."
+    persona = prompt_section("Persona", language=language.english_name)
+    greeting = prompt_section(
+        "Greeting", language=language.english_name, greeting=language.greeting
     )
+    return persona + "\n\n" + greeting
 
 
 @dataclass(frozen=True)
