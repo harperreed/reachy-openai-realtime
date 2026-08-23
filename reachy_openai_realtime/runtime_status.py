@@ -78,11 +78,14 @@ class RuntimeStatus:
         """Mirror the presence manager's current state into the snapshot.
 
         Wired as the manager's on_transition hook. The manager already records
-        the `presence.transition` event, so this only tracks state for display.
+        the `presence.transition` event. Sleeping also clears the connection bit
+        because the stopped session deliberately skips a disconnected phase.
         """
         state_name = getattr(new, "name", str(new)).lower()
         with self._lock:
             self._presence_state = state_name
+            if state_name == "sleeping":
+                self._connected = False
             self._updated_at = _now()
 
     def set_phase(
