@@ -89,8 +89,30 @@ def test_session_uses_client_turn_detection_and_far_field_noise_reduction() -> N
 
     assert audio_input["turn_detection"] is None
     assert audio_input["noise_reduction"] == {"type": "far_field"}
-    assert "transcription" not in audio_input
+    assert audio_input["transcription"] == {"model": "whisper-1"}
     assert "configured conversation language is English" in config["instructions"]
+
+
+def test_session_config_enables_input_transcription_by_default() -> None:
+    # The wordless-transcript noise bail needs a transcript to read; enabling
+    # input transcription is what makes OpenAI emit one per committed turn.
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.config = AppConfig()
+    session.motion = _StubMotion()
+
+    audio_input = session._session_config()["audio"]["input"]
+    assert audio_input["transcription"] == {"model": "whisper-1"}
+
+
+def test_session_config_omits_transcription_when_model_blank() -> None:
+    # Empty model disables transcription (and its per-turn billing); the bail
+    # then leans entirely on the wall-clock ceiling.
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.config = AppConfig(input_transcription_model="")
+    session.motion = _StubMotion()
+
+    audio_input = session._session_config()["audio"]["input"]
+    assert "transcription" not in audio_input
 
 
 def test_session_language_provider_changes_response_language() -> None:

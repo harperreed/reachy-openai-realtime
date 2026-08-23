@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 from openai import AsyncOpenAI
 from openai.types.realtime import (
+    AudioTranscriptionParam,
     RealtimeAudioConfigInputParam,
     RealtimeAudioConfigOutputParam,
     RealtimeAudioConfigParam,
@@ -428,15 +429,23 @@ class RealtimeRobotSession:
         tools = self.motion.tool_definitions()
         if memory_active:
             tools = tools + memory_tool_definitions()
+        audio_input = RealtimeAudioConfigInputParam(
+            format=pcm24,
+            noise_reduction={"type": "far_field"},
+            turn_detection=None,
+        )
+        # Enable input transcription so a committed turn yields a transcript the
+        # noise bail can read. Metered per committed turn (real speech too); a
+        # blank model disables it and leaves the wall-clock ceiling as the guard.
+        if self.config.input_transcription_model:
+            audio_input["transcription"] = AudioTranscriptionParam(
+                model=self.config.input_transcription_model
+            )
         return RealtimeSessionCreateRequestParam(
             type="realtime",
             instructions=instructions,
             audio=RealtimeAudioConfigParam(
-                input=RealtimeAudioConfigInputParam(
-                    format=pcm24,
-                    noise_reduction={"type": "far_field"},
-                    turn_detection=None,
-                ),
+                input=audio_input,
                 output=RealtimeAudioConfigOutputParam(
                     format=pcm24,
                     voice=self.config.voice,
@@ -1076,6 +1085,13 @@ class RealtimeRobotSession:
                 transcript = (event.transcript or "").strip()
                 logger.info("Reachy: %s", transcript)
                 self.status.record_transcript("assistant", transcript)
+            elif event_type == "conversation.item.input_audio_transcription.completed":
+                # A committed user turn transcribed. Feed the noise bail and record
+                # it for the dashboard. No file log of the transcript: room speech
+                # stays in memory-only status, unlike Reachy's own output above.
+                transcript = (getattr(event, "transcript", "") or "").strip()
+                self.status.record_transcript("user", transcript)
+                self._note_user_transcript(transcript, stop_event)
             elif event_type == "response.output_audio.done":
                 if str(event.response_id) not in self._interrupted_response_ids:
                     self._speaker_busy_until += 0.3

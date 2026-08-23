@@ -3,9 +3,10 @@
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
-from conftest import drive_fsm
+from conftest import ScriptedConnection, drive_fsm
 
 from reachy_openai_realtime import realtime as realtime_mod
 from reachy_openai_realtime.config import AppConfig
@@ -75,6 +76,32 @@ def test_noise_counter_disabled_when_turns_zero():
         session._note_user_transcript("", stop)
     assert session._noise_turn_count == 0
     assert not stop.is_set()
+
+
+class _EndOfScript(Exception):
+    """Sentinel that ends _event_loop deterministically after the scripted event."""
+
+
+def test_event_loop_routes_user_transcription_to_noise_bail():
+    # Wiring: a committed-turn transcript event must reach the noise counter and
+    # land as the user transcript in status. _note_user_transcript is tested
+    # above; this proves the dispatch chain routes the event to it.
+    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
+    session.config = AppConfig(noise_bail_turns=3)
+    session.status = RuntimeStatus()
+    session._noise_turn_count = 0
+    event = SimpleNamespace(
+        type="conversation.item.input_audio_transcription.completed",
+        transcript="...",
+    )
+    session.connection = ScriptedConnection([event], raise_after=_EndOfScript())
+    stop = threading.Event()
+
+    with pytest.raises(_EndOfScript):
+        asyncio.run(session._event_loop(stop))
+
+    assert session._noise_turn_count == 1
+    assert session.status.snapshot()["last_user"] == "..."
 
 
 def _supervisor_session(**config_kwargs) -> RealtimeRobotSession:
