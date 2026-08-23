@@ -161,3 +161,35 @@ def test_from_env_wake_bad_numbers_fall_back_to_defaults(monkeypatch):
 def test_from_env_wake_enabled_defaults_true_when_unset(monkeypatch):
     monkeypatch.delenv("REACHY_OPENAI_REALTIME_WAKE_ENABLED", raising=False)
     assert AppConfig.from_env().wake_enabled is True
+
+
+def test_noise_bail_defaults():
+    config = AppConfig()
+    assert config.noise_bail_turns == 3
+    assert config.noise_bail_session_minutes == 30
+    assert config.input_transcription_model == "whisper-1"
+
+
+def test_noise_bail_turns_and_minutes_clamped_non_negative():
+    # 0 (or below) disables a backstop; a negative env typo must never wrap into
+    # an always-armed or never-armed absurd value.
+    assert AppConfig(noise_bail_turns=-2).noise_bail_turns == 0
+    assert AppConfig(noise_bail_session_minutes=-5).noise_bail_session_minutes == 0
+
+
+def test_from_env_parses_noise_bail_settings(monkeypatch):
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_TURNS", "5")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_SESSION_MINUTES", "15")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe")
+    config = AppConfig.from_env()
+    assert config.noise_bail_turns == 5
+    assert config.noise_bail_session_minutes == 15
+    assert config.input_transcription_model == "gpt-4o-mini-transcribe"
+
+
+def test_from_env_noise_bail_bad_numbers_fall_back_to_defaults(monkeypatch):
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_TURNS", "not-a-number")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_SESSION_MINUTES", "garbage")
+    config = AppConfig.from_env()
+    assert config.noise_bail_turns == 3
+    assert config.noise_bail_session_minutes == 30
