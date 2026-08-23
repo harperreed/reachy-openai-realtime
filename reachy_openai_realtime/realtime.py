@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import math
+import re
 import threading
 import time
 import uuid
@@ -67,6 +68,21 @@ from .tool_executor import (
 from .vad import EnergyTurnDetector
 
 logger = logging.getLogger(__name__)
+
+
+def _is_garbage_transcript(transcript: str) -> bool:
+    """True when a committed turn produced no recognizable words — the noise
+    signal for the anti-runaway backstop.
+
+    Two tiers, both Unicode-safe: an empty transcript, or one with no word
+    character at all (only punctuation or symbols). ``\\w`` matches CJK and
+    accented scripts, so a lone real word like "好" is spared; the wall-clock
+    ceiling backstops the fragments this deliberately lets through (a bare
+    consonant, or Whisper hallucinating a word on noise)."""
+    stripped = transcript.strip()
+    if not stripped:
+        return True
+    return re.search(r"\w", stripped) is None
 
 
 class DoAPoller:
@@ -179,6 +195,10 @@ class RealtimeRobotSession:
         self._playback_started_at: float | None = None
         self._playback_pushed_ms = 0.0
         self._interrupted_response_ids: RecentIds = RecentIds()
+        # Consecutive wordless-transcript turns; the transcript fast-bail counter.
+        # Survives reconnect on purpose (see _note_user_transcript) — not reset in
+        # reset_connection_state like the per-socket state above it.
+        self._noise_turn_count = 0
         self._camera_capture_task: asyncio.Task[bool] | None = None
         self._last_camera_item_id: str | None = None
         self._pending_camera_items: dict[str, int] = {}
@@ -1365,6 +1385,30 @@ class RealtimeRobotSession:
                     check="fsm_inactivity", state=state.name, age_seconds=round(age, 1),
                 )
                 raise WatchdogTimeout("fsm_inactivity", FSM_INACTIVITY_LIMIT_SECONDS)
+
+    def _note_user_transcript(self, transcript: str, stop_event: Any) -> None:
+        """Fast noise bail: count consecutive wordless committed turns and, once
+        noise_bail_turns land in a row, set the stop flag for a clean stop→sleep.
+        A turn with real words resets the count. The count deliberately survives
+        a reconnect (like _session_started_at, and unlike the per-socket state in
+        reset_connection_state) — noise does not stop being noise because the
+        socket blipped. noise_bail_turns == 0 disables this; the wall-clock
+        ceiling still guards."""
+        limit = self.config.noise_bail_turns
+        if limit <= 0:
+            return
+        if not _is_garbage_transcript(transcript):
+            self._noise_turn_count = 0
+            return
+        self._noise_turn_count += 1
+        self.status.record_event(
+            "noise_bail.turn",
+            consecutive=self._noise_turn_count,
+            limit=limit,
+        )
+        if self._noise_turn_count >= limit:
+            self.status.record_event("noise_bail.triggered", consecutive=self._noise_turn_count)
+            stop_event.set()
 
     def _nap_idle(self) -> bool:
         return (
