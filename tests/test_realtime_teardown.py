@@ -36,8 +36,14 @@ async def _honor_stop(stop_event) -> None:
 
 
 async def _ignore_stop() -> None:
-    """A loop that never watches the stop flag (watchdog/supervisor). Only
-    cancellation ends it — the exact shape that makes a bare gather() hang."""
+    """A loop that never watches the stop flag (watchdog). Only cancellation ends
+    it — the exact shape that makes a bare gather() hang."""
+    await asyncio.Event().wait()
+
+
+async def _ignore_stop_arg(stop_event) -> None:
+    """Supervisor variant: takes stop_event (real signature) but ignores it, still
+    proving _await_tasks_or_stop tears down when a loop declines to watch stop."""
     await asyncio.Event().wait()
 
 
@@ -47,7 +53,7 @@ def _make_idle_session(
     playback_loop=_honor_stop,
     event_loop=_honor_stop,
     watchdog_loop=_ignore_stop,
-    supervisor_loop=_ignore_stop,
+    supervisor_loop=_ignore_stop_arg,
 ) -> RealtimeRobotSession:
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
     session.client = FakeRealtimeClient([ScriptedConnection([])])

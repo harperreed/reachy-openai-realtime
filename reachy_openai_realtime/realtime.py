@@ -209,6 +209,10 @@ class RealtimeRobotSession:
         self._mic_ladder = AudioRecoveryLadder()
         self._audio: AudioSubscription | None = None
         self._connected_at: float | None = None
+        # Whole-session start, set once per run() and never reset on reconnect, so
+        # the wall-clock ceiling (the never-runs-away guarantee) survives a
+        # reconnect storm. Distinct from _connected_at, which resets each socket.
+        self._session_started_at: float | None = None
         self._connected_epoch: int | None = None
         self._speech_ended_at: float | None = None
         self._barge_in_at: float | None = None
@@ -247,6 +251,7 @@ class RealtimeRobotSession:
         self.status.record_event("audio.capture.started")
         self._speaker.start()
         self.status.record_event("audio.playback.started")
+        self._session_started_at = time.monotonic()
         try:
             backoff = BackoffPolicy()
             while not stop_event.is_set():
@@ -360,7 +365,7 @@ class RealtimeRobotSession:
                 asyncio.create_task(self._playback_loop(stop_event), name="playback-loop"),
                 asyncio.create_task(self._event_loop(stop_event), name="event-loop"),
                 asyncio.create_task(self._watchdog_loop(), name="watchdog-loop"),
-                asyncio.create_task(self._supervisor_loop(), name="supervisor-loop"),
+                asyncio.create_task(self._supervisor_loop(stop_event), name="supervisor-loop"),
             ]
             if self.nap is not None and self._memory_tools_active:
                 tasks.append(asyncio.create_task(self.nap.run(self._nap_idle), name="nap-loop"))
@@ -1329,12 +1334,29 @@ class RealtimeRobotSession:
             self.status.add_event(f"protocol watchdog: {exc.operation} timed out", level="warning")
             raise
 
-    async def _supervisor_loop(self) -> None:
+    async def _supervisor_loop(self, stop_event: Any) -> None:
         """FSM-inactivity check (spec §24): a non-LISTENING state with no
         transition for 120s means something wedged with no watchdog armed.
-        Raising WatchdogTimeout reuses the classify→TRANSIENT→reconnect path."""
+        Raising WatchdogTimeout reuses the classify→TRANSIENT→reconnect path.
+
+        Also enforces the anti-runaway wall-clock ceiling: noise keeps the FSM
+        moving, so the inactivity check is blind to a runaway. Once the whole
+        session outlives noise_bail_session_minutes, set the stop flag — a clean
+        stop→sleep, NOT a reconnect — bounding the worst case regardless of what
+        the transcript classifier does."""
+        ceiling_seconds = self.config.noise_bail_session_minutes * 60
         while True:
             await asyncio.sleep(SUPERVISOR_POLL_SECONDS)
+            if ceiling_seconds > 0 and self._session_started_at is not None:
+                session_age = time.monotonic() - self._session_started_at
+                if session_age >= ceiling_seconds:
+                    self.status.record_event(
+                        "noise_bail.wall_clock",
+                        session_age_seconds=round(session_age, 1),
+                        limit_minutes=self.config.noise_bail_session_minutes,
+                    )
+                    stop_event.set()
+                    return
             state = self.fsm.state
             age = time.monotonic() - self._last_fsm_transition_at
             if state is not SessionState.LISTENING and age > FSM_INACTIVITY_LIMIT_SECONDS:
