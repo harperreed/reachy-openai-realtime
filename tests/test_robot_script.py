@@ -192,18 +192,27 @@ esac
 
 
 @pytest.mark.parametrize(
-    ("status", "leaked_value"),
+    ("status", "expected_phase", "leaked_value"),
     [
-        ({"connected": True, "phase": {"nested": "phase-secret"}}, "phase-secret"),
-        ({"connected": True, "phase": ["phase-secret"]}, "phase-secret"),
-        ({"connected": True, "phase": 23}, "23"),
-        ({"connected": True, "phase": True}, None),
-        ({"connected": True, "phase": None}, None),
-        ({"connected": True}, None),
+        ({"connected": True, "phase": "listening"}, "listening", None),
+        (
+            {"connected": True, "phase": "private-conversation-fragment"},
+            "?",
+            "private-conversation-fragment",
+        ),
+        ({"connected": True, "phase": {"nested": "phase-secret"}}, "?", "phase-secret"),
+        ({"connected": True, "phase": ["phase-secret"]}, "?", "phase-secret"),
+        ({"connected": True, "phase": 23}, "?", "23"),
+        ({"connected": True, "phase": True}, "?", None),
+        ({"connected": True, "phase": None}, "?", None),
+        ({"connected": True}, "?", None),
     ],
 )
 def test_status_hides_malformed_connected_phase_values(
-    tmp_path: Path, status: dict[str, object], leaked_value: str | None
+    tmp_path: Path,
+    status: dict[str, object],
+    expected_phase: str,
+    leaked_value: str | None,
 ) -> None:
     fake_curl = tmp_path / "curl"
     fake_curl.write_text(
@@ -233,7 +242,7 @@ esac
     )
 
     assert result.returncode == 0
-    assert "realtime: connected phase=?" in result.stdout
+    assert f"realtime: connected phase={expected_phase}" in result.stdout
     if leaked_value is not None:
         assert leaked_value not in result.stdout
 

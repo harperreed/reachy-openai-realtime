@@ -144,7 +144,21 @@ app_status() {
     status=$(curl -fsS -m 5 "$APPDASH/api/status") || return 1
     printf '%s' "$status" | scrub
 }
-app_phase() { jq -r 'if (.phase | type) == "string" then .phase else "?" end' 2>/dev/null; }
+app_phase() {
+    # RuntimeStatus phase literals written by runtime_status.py, main.py, and realtime.py.
+    jq -r '
+        .phase as $phase
+        | if (($phase | type) == "string"
+            and ([
+                "starting", "waiting_key", "starting_audio", "tuning_audio",
+                "reconnecting", "safety_sleep", "stopped", "error", "disconnected",
+                "user_speaking", "listening", "thinking", "responding", "assistant_speaking"
+            ] | index($phase)) != null)
+          then $phase
+          else "?"
+          end
+    ' 2>/dev/null
+}
 app_mode() { "$READY_STATE"; }
 APP_READY_MODE=""
 APP_READY_STATUS=""

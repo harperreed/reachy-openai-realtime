@@ -1,6 +1,8 @@
 # ABOUTME: Guards that the shipped dashboard static files carry the wake-word
 # ABOUTME: panel markup, presence rendering, and English i18n rows.
 import json
+import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -11,7 +13,12 @@ from reachy_openai_realtime.presence.states import PresenceState
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 
 STATIC = Path(reachy_openai_realtime.__file__).resolve().parent / "static"
-NODE = Path("/opt/homebrew/bin/node")
+
+
+def _node_path() -> str:
+    node = shutil.which("node")
+    assert node is not None, "Node.js executable 'node' is required for dashboard classifier tests"
+    return node
 
 
 def _safety_snapshot(*, wake_mode: bool) -> dict[str, object]:
@@ -30,7 +37,7 @@ def _classify_safety_status(payload: dict[str, object]) -> str:
         "process.stdout.write(classifySafetySleep(JSON.parse(process.argv[2])) || '');"
     )
     result = subprocess.run(
-        [str(NODE), "-e", script, str(STATIC / "status.js"), json.dumps(payload)],
+        [_node_path(), "-e", script, str(STATIC / "status.js"), json.dumps(payload)],
         text=True,
         capture_output=True,
         check=False,
@@ -93,8 +100,25 @@ def test_main_js_wires_presence_and_endpoints() -> None:
     ],
 )
 def test_dashboard_safety_classifier(payload: dict[str, object], expected: str) -> None:
-    assert NODE.exists(), "Node is required for dashboard classifier tests"
     assert _classify_safety_status(payload) == expected
+
+
+def test_dashboard_classifier_discovers_node_from_path(tmp_path: Path, monkeypatch) -> None:
+    real_node = shutil.which("node")
+    assert real_node is not None, "Node.js executable 'node' is required for dashboard classifier tests"
+    marker = tmp_path / "node-used"
+    wrapper = tmp_path / "node"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"printf 'used\\n' > {shlex.quote(str(marker))}\n"
+        f"exec {shlex.quote(real_node)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert _classify_safety_status(_safety_snapshot(wake_mode=True)) == "wake"
+    assert marker.read_text(encoding="utf-8") == "used\n"
 
 
 def test_wake_button_stays_enabled_for_sleeping_safety_latch() -> None:

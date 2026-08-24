@@ -114,6 +114,8 @@ uv run ruff check .
 uv run reachy-mini-app-assistant check .
 ```
 
+Dashboard classifier tests require Node.js available as `node` on `PATH`.
+
 The motion layer validates tool names and arguments and maps them to bounded presets. The model never receives raw joint-angle control.
 
 ### Robot lifecycle
