@@ -102,7 +102,7 @@ The same scan runs in GitHub Actions together with tests and linting.
 
 ## Camera behavior and cost
 
-The AI camera starts OFF. When enabled, the UI shows a local preview and the app sends one JPEG at the beginning of each detected user turn using a Realtime `conversation.item.create` item with `input_image`. Image inputs are billable.
+The AI camera starts OFF. When enabled, the UI shows a local preview, and the app captures one JPEG only after a completed user turn passes the circuit breaker, then attaches it as a Realtime `conversation.item.create` item with `input_image` before audio commit and response creation. Image inputs are billable.
 
 ## Development
 
