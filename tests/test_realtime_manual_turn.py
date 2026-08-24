@@ -249,12 +249,19 @@ def _manual_turn_session(frames: list[np.ndarray], stop_event: FakeStopEvent) ->
 
 def test_record_loop_manually_commits_after_local_silence() -> None:
     stop_event = FakeStopEvent()
+    camera_captures: list[bool] = []
     frames = (
         [stereo_frame(-50.0) for _ in range(10)]
         + [stereo_frame(-30.0) for _ in range(15)]
         + [stereo_frame(-60.0) for _ in range(40)]
     )
     session = _manual_turn_session(frames, stop_event)
+
+    def capture_camera() -> bytes:
+        camera_captures.append(True)
+        return b"\xff\xd8camera-jpeg\xff\xd9"
+
+    session._capture_camera_jpeg = capture_camera
     session._capture.start()
     session._audio = session._capture.subscribe("realtime")
     asyncio.run(session._record_loop(stop_event))
@@ -263,6 +270,7 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     assert session.connection.input_audio_buffer.appended > 0
     assert session.connection.input_audio_buffer.committed == 1
     assert session.connection.response.created == 1
+    assert camera_captures == [True]
     assert len(session.connection.conversation.item.created) == 1
     image_item = session.connection.conversation.item.created[0]["item"]
     assert image_item["type"] == "message"
@@ -276,12 +284,19 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
 
 def test_record_loop_fifth_turn_stops_before_commit_or_response() -> None:
     stop_event = FakeStopEvent()
+    camera_captures: list[bool] = []
     frames = (
         [stereo_frame(-50.0) for _ in range(10)]
         + [stereo_frame(-30.0) for _ in range(15)]
         + [stereo_frame(-60.0) for _ in range(40)]
     )
     session = _manual_turn_session(frames, stop_event)
+
+    def capture_camera() -> bytes:
+        camera_captures.append(True)
+        return b"\xff\xd8camera-jpeg\xff\xd9"
+
+    session._capture_camera_jpeg = capture_camera
     now = time.monotonic()
     for offset in (-4.0, -3.0, -2.0, -1.0):
         assert session._turn_rate_breaker.record_turn(now + offset) is False
@@ -292,6 +307,8 @@ def test_record_loop_fifth_turn_stops_before_commit_or_response() -> None:
     session._capture.close()
 
     assert stop_event.is_set() is True
+    assert camera_captures == []
+    assert session.connection.conversation.item.created == []
     assert session.connection.input_audio_buffer.committed == 0
     assert session.connection.response.created == 0
     assert session._noise_bailed is True

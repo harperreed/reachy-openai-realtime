@@ -8,7 +8,13 @@ jq -er '
         and has("presence") and .presence == "sleeping"
         and has("wake_latched") and .wake_latched == true
         and has("wake_latch_reason") and .wake_latch_reason == "noise_bail"
-        and has("last_error") and .last_error == null then "latched"
+        and has("last_error") and .last_error == null then "safety_wake"
+    elif has("connected") and .connected == false
+        and has("presence") and .presence == null
+        and has("phase") and .phase == "safety_sleep"
+        and has("wake_latched") and .wake_latched == true
+        and has("wake_latch_reason") and .wake_latch_reason == "noise_bail"
+        and has("last_error") and .last_error == null then "safety_always_on"
     elif has("connected") and .connected == false
         and has("presence") and .presence == "sleeping"
         and has("wake_latched") and .wake_latched == false

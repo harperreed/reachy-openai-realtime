@@ -257,54 +257,88 @@ class RealtimeRobotSession:
         self._speaker.start()
         self.status.record_event("audio.playback.started")
         self._session_started_at = time.monotonic()
+        reconnect_task = asyncio.create_task(self._run_reconnect_loop(stop_event))
+        stop_waiter = asyncio.create_task(self._await_stop(stop_event))
+        deadline = asyncio.create_task(asyncio.sleep(SESSION_LIMIT_SECONDS))
         try:
-            backoff = BackoffPolicy()
-            while not stop_event.is_set():
-                self.connection_epoch += 1
-                self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
-                self.status.record_event("realtime.connecting", epoch=self.connection_epoch)
-                connected_at = time.monotonic()
-                error: BaseException | None = None
-                try:
-                    await self._run_connection(stop_event)
-                except asyncio.CancelledError:
-                    raise
-                except AudioPipelineStalled:
-                    raise  # escalation: main.py rebuilds the entire app session (mic ladder attempt 3)
-                except Exception as exc:  # noqa: BLE001 — every connection error is classified, never re-raised
-                    error = exc
-                if stop_event.is_set():
-                    break
-                self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
-                await self.reset_connection_state()
-                if error is not None:
-                    self.status.record_error(f"realtime connection failed: {error}")
-                    if self._noise_bailed:
-                        self.fsm.transition(SessionState.STOPPING, reason="noise_bail")
-                        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
-                        return SessionOutcome.NOISE_BAIL
-                    if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
-                        self.status.set_phase("error", "設定エラーが発生しました", connected=False, detail_key="detail_error")
-                        self.status.record_event("realtime.error", fatal=True, message=str(error))
-                        self.fsm.transition(SessionState.STOPPING, reason="fatal_config_error")
-                        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
-                        return SessionOutcome.FATAL_CONFIG
-                backoff.note_session_duration(time.monotonic() - connected_at)
-                delay = backoff.next_delay()
-                self.status.record_event("realtime.reconnect", delay_seconds=round(delay, 2))
-                self.status.metrics.increment("reconnect_count")
-                await self._sleep_unless_stopped(stop_event, delay)
-            self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
+            done, _ = await asyncio.wait(
+                {reconnect_task, stop_waiter, deadline}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if reconnect_task in done:
+                return reconnect_task.result()
+
+            if deadline in done and not stop_event.is_set():
+                self._noise_bailed = True
+                session_age = time.monotonic() - self._session_started_at
+                self.status.record_event(
+                    "noise_bail.wall_clock",
+                    session_age_seconds=round(session_age, 2),
+                    limit_seconds=SESSION_LIMIT_SECONDS,
+                )
+                stop_event.set()
+
+            reconnect_task.cancel()
+            await asyncio.gather(reconnect_task, return_exceptions=True)
+            reason = "noise_bail" if self._noise_bailed else "stop_requested"
+            self.fsm.transition(SessionState.STOPPING, reason=reason)
             await self.reset_connection_state()
             self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
             return SessionOutcome.NOISE_BAIL if self._noise_bailed else SessionOutcome.STOPPED
         finally:
+            stop_waiter.cancel()
+            deadline.cancel()
+            reconnect_task.cancel()
+            await asyncio.gather(stop_waiter, deadline, reconnect_task, return_exceptions=True)
             self._speaker.close()
             self._capture.unsubscribe("realtime")
             self._audio = None
             self.status.record_event("audio.capture.stopped")
             self.status.set_component_health("microphone", False, expires=False)
             self.status.set_component_health("speaker", False, expires=False)
+
+    async def _run_reconnect_loop(self, stop_event: Any) -> SessionOutcome:
+        backoff = BackoffPolicy()
+        while not stop_event.is_set():
+            self.connection_epoch += 1
+            self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
+            self.status.record_event("realtime.connecting", epoch=self.connection_epoch)
+            connected_at = time.monotonic()
+            error: BaseException | None = None
+            try:
+                await self._run_connection(stop_event)
+            except asyncio.CancelledError:
+                raise
+            except AudioPipelineStalled:
+                raise  # escalation: main.py rebuilds the entire app session (mic ladder attempt 3)
+            except Exception as exc:  # noqa: BLE001 — every connection error is classified, never re-raised
+                error = exc
+            if stop_event.is_set():
+                break
+            self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
+            await self.reset_connection_state()
+            if error is not None:
+                self.status.record_error(f"realtime connection failed: {error}")
+                if self._noise_bailed:
+                    self.fsm.transition(SessionState.STOPPING, reason="noise_bail")
+                    self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+                    return SessionOutcome.NOISE_BAIL
+                if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
+                    self.status.set_phase(
+                        "error", "設定エラーが発生しました", connected=False, detail_key="detail_error"
+                    )
+                    self.status.record_event("realtime.error", fatal=True, message=str(error))
+                    self.fsm.transition(SessionState.STOPPING, reason="fatal_config_error")
+                    self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+                    return SessionOutcome.FATAL_CONFIG
+            backoff.note_session_duration(time.monotonic() - connected_at)
+            delay = backoff.next_delay()
+            self.status.record_event("realtime.reconnect", delay_seconds=round(delay, 2))
+            self.status.metrics.increment("reconnect_count")
+            await self._sleep_unless_stopped(stop_event, delay)
+        self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
+        await self.reset_connection_state()
+        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+        return SessionOutcome.NOISE_BAIL if self._noise_bailed else SessionOutcome.STOPPED
 
     async def _sleep_unless_stopped(self, stop_event: Any, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -529,7 +563,6 @@ class RealtimeRobotSession:
                 self.status.record_event("vad.started", reason="wake_turn")
                 self.motion.set_listening_enabled(True)
                 self.motion.set_idle_enabled(False)
-                self._start_camera_capture()
                 self.status.set_phase(
                     "user_speaking",
                     "音声を聞いています",
@@ -660,7 +693,6 @@ class RealtimeRobotSession:
                     {"state": "start"},
                     True,
                 )
-                self._start_camera_capture()
                 self.motion.set_idle_enabled(False)
                 self.status.set_phase(
                     "user_speaking",
@@ -721,6 +753,7 @@ class RealtimeRobotSession:
                 )
                 # Ensure the image item is in the conversation before the audio
                 # message is committed and response generation starts.
+                self._start_camera_capture()
                 await self._finish_camera_capture()
                 self.watchdog.arm("input_append")
                 await self.connection.input_audio_buffer.commit()
@@ -1353,28 +1386,14 @@ class RealtimeRobotSession:
             self.status.add_event(f"protocol watchdog: {exc.operation} timed out", level="warning")
             raise
 
-    async def _supervisor_loop(self, stop_event: Any) -> None:
+    async def _supervisor_loop(self, _stop_event: Any) -> None:
         """FSM-inactivity check (spec §24): a non-LISTENING state with no
         transition for 120s means something wedged with no watchdog armed.
         Raising WatchdogTimeout reuses the classify→TRANSIENT→reconnect path.
 
-        Also enforces the fixed anti-runaway wall-clock ceiling: noise keeps the
-        FSM moving, so the inactivity check is blind to a runaway. Once the
-        whole session outlives the limit, set the stop flag — a clean stop→sleep,
-        not a reconnect."""
+        The run-scoped deadline owns the independent anti-runaway ceiling."""
         while True:
             await asyncio.sleep(SUPERVISOR_POLL_SECONDS)
-            if self._session_started_at is not None:
-                session_age = time.monotonic() - self._session_started_at
-                if session_age >= SESSION_LIMIT_SECONDS:
-                    self._noise_bailed = True
-                    self.status.record_event(
-                        "noise_bail.wall_clock",
-                        session_age_seconds=round(session_age, 1),
-                        limit_seconds=SESSION_LIMIT_SECONDS,
-                    )
-                    stop_event.set()
-                    return
             state = self.fsm.state
             age = time.monotonic() - self._last_fsm_transition_at
             if state is not SessionState.LISTENING and age > FSM_INACTIVITY_LIMIT_SECONDS:

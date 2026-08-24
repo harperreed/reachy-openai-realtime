@@ -130,8 +130,10 @@ start_app() {
             echo "app: ready (connected, phase $(printf '%s' "$APP_READY_STATUS" | app_phase))" ;;
         sleeping)
             echo "app: ready (sleeping, wake armed)" ;;
-        latched)
+        safety_wake)
             echo "app: ready (safety sleep (manual wake required))" ;;
+        safety_always_on)
+            echo "app: ready (safety sleep (app restart required))" ;;
         *)
             echo "error: app readiness state disappeared" >&2
             return 1 ;;
@@ -183,7 +185,8 @@ cmd_status() {
         case "$mode" in
             connected) echo "realtime: connected phase=$(printf '%s' "$status" | app_phase)" ;;
             sleeping)  echo "realtime: sleeping, wake armed" ;;
-            latched)   echo "realtime: safety sleep (manual wake required)" ;;
+            safety_wake)      echo "realtime: safety sleep (manual wake required)" ;;
+            safety_always_on) echo "realtime: safety sleep (app restart required)" ;;
             *)         echo "realtime: not connected" ;;
         esac
     fi

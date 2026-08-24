@@ -7,7 +7,25 @@ from pathlib import Path
 
 import pytest
 
+from reachy_openai_realtime.presence.states import PresenceState
+from reachy_openai_realtime.runtime_status import RuntimeStatus
+
 READY_STATE = Path(__file__).parents[1] / "scripts" / "robot-ready-state"
+
+
+def _safety_snapshot(*, wake_mode: bool) -> dict[str, object]:
+    status = RuntimeStatus()
+    if wake_mode:
+        status.set_presence(PresenceState.BOOTING, PresenceState.SLEEPING, "boot_complete")
+    else:
+        status.set_phase(
+            "safety_sleep",
+            "Safety sleep is active; restart the app to rearm",
+            connected=False,
+            detail_key="detail_safety_sleep",
+        )
+    status.set_wake_latch(True, "noise_bail")
+    return status.snapshot()
 
 
 @pytest.mark.parametrize(
@@ -49,19 +67,21 @@ def test_ready_state_accepts_healthy_app_modes(payload: dict[str, object], expec
     assert result.stdout.strip() == expected
 
 
-def test_ready_state_reports_latched_sleep() -> None:
-    payload = {
-        "connected": False,
-        "presence": "sleeping",
-        "wake_latched": True,
-        "wake_latch_reason": "noise_bail",
-        "last_error": None,
-    }
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (_safety_snapshot(wake_mode=True), "safety_wake"),
+        (_safety_snapshot(wake_mode=False), "safety_always_on"),
+    ],
+)
+def test_ready_state_reports_exact_safety_mode(
+    payload: dict[str, object], expected: str
+) -> None:
     result = subprocess.run(
         [str(READY_STATE)], input=json.dumps(payload), text=True, capture_output=True, check=False
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "latched"
+    assert result.stdout.strip() == expected
 
 
 @pytest.mark.parametrize(
@@ -216,3 +236,49 @@ esac
     assert "realtime: connected phase=?" in result.stdout
     if leaked_value is not None:
         assert leaked_value not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (_safety_snapshot(wake_mode=True), "realtime: safety sleep (manual wake required)"),
+        (_safety_snapshot(wake_mode=False), "realtime: safety sleep (app restart required)"),
+    ],
+)
+def test_status_distinguishes_safety_mode_from_runtime_snapshot(
+    tmp_path: Path, status: dict[str, object], expected: str
+) -> None:
+    curl_log = tmp_path / "curl.log"
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+case "$*" in
+    *":8042/api/status"*) printf 'app-status\\n' >> "$CURL_LOG"; printf '%s' "$DASHBOARD_STATUS" ;;
+    *":8000/api/daemon/status"*) printf '%s\\n200' '{"state":"running","backend_status":{"ready":true,"motor_control_mode":"enabled"}}' ;;
+    *":8000/api/state/present_head_pose"*) printf '%s\\n200' '{"z":0}' ;;
+    *":8000/api/apps/current-app-status"*) printf '%s\\n200' '{"info":{"name":"reachy_openai_realtime"},"state":"running"}' ;;
+    *) exit 1 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    environment = os.environ | {
+        "CURL_LOG": str(curl_log),
+        "DASHBOARD_STATUS": json.dumps(status),
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+    }
+
+    result = subprocess.run(
+        [str(READY_STATE.parent / "robot"), "-H", "test", "status"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+
+    assert result.returncode == 0
+    assert expected in result.stdout
+    assert curl_log.read_text(encoding="utf-8").splitlines() == ["app-status"]
+    assert "wake_latched" not in result.stdout
+    assert "Safety sleep is active" not in result.stdout

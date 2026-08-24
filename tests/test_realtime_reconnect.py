@@ -4,6 +4,9 @@ import asyncio
 import os
 import threading
 
+from conftest import FakeRecorder
+
+from reachy_openai_realtime import realtime as realtime_mod
 from reachy_openai_realtime.audio.capture import CaptureWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.presence.manager import _EitherStop
@@ -132,3 +135,40 @@ def test_noise_bail_wins_when_fatal_error_arrives_after_stop_check() -> None:
     assert not app_stop.is_set()
     assert attempts == [1]
     session._capture.close()
+
+
+def test_run_wall_clock_ceiling_cancels_blocked_connection_attempt(monkeypatch) -> None:
+    monkeypatch.setattr(realtime_mod, "SESSION_LIMIT_SECONDS", 0.05)
+    attempts: list[int] = []
+    cancelled: list[bool] = []
+    session = make_session(ConnectionError("unused"), attempts)
+    recorder = FakeRecorder()
+    session.status.attach_recorder(recorder)
+    app_stop = threading.Event()
+    session_stop = threading.Event()
+    combined_stop = _EitherStop(app_stop, session_stop)
+
+    async def blocked_connection(stop_event: object) -> None:
+        attempts.append(session.connection_epoch)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    session._run_connection = blocked_connection  # type: ignore[method-assign]
+    try:
+        outcome = asyncio.run(asyncio.wait_for(session.run(combined_stop), timeout=0.5))
+    finally:
+        session._capture.close()
+
+    wall_clock_events = [fields for event, fields in recorder.events if event == "noise_bail.wall_clock"]
+    assert outcome is SessionOutcome.NOISE_BAIL
+    assert attempts == [1]
+    assert cancelled == [True]
+    assert session_stop.is_set()
+    assert not app_stop.is_set()
+    assert session.fsm.state.name == "DISCONNECTED"
+    assert len(wall_clock_events) == 1
+    assert wall_clock_events[0]["session_age_seconds"] >= 0.05
+    assert wall_clock_events[0]["limit_seconds"] == 0.05
