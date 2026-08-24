@@ -19,13 +19,17 @@ def test_index_html_has_wake_panel() -> None:
 def test_main_js_wires_presence_and_endpoints() -> None:
     js = (STATIC / "main.js").read_text(encoding="utf-8")
     assert "status.presence" in js
-    assert "status.wake_latched" in js
+    assert "const safetyLatched = status.wake_latched === true" in js
+    assert 'status.wake_latch_reason === "noise_bail"' in js
+    assert 'presence === "sleeping"' in js
+    assert 'wakeState.textContent = safetyLatched\n    ? t("presence_latched")' in js
     assert "/api/presence/wake" in js
     assert "/api/presence/sleep" in js
 
 
 def test_i18n_has_english_wake_rows() -> None:
     js = (STATIC / "i18n.js").read_text(encoding="utf-8")
+    assert 'presence_latched: ["Safety sleep · use Wake now"]' in js
     for key in (
         "wake_title",
         "presence_sleeping",

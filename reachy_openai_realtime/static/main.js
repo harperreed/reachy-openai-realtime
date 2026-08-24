@@ -243,8 +243,11 @@ function renderRuntime(status) {
 
   const presenceStates = ["booting", "sleeping", "waking", "awake", "error"];
   const presence = presenceStates.includes(status.presence) ? status.presence : null;
+  const safetyLatched = status.wake_latched === true
+    && status.wake_latch_reason === "noise_bail"
+    && presence === "sleeping";
   const wakeState = document.getElementById("wake-state");
-  wakeState.textContent = status.wake_latched
+  wakeState.textContent = safetyLatched
     ? t("presence_latched")
     : presence
       ? t(`presence_${presence}`)
