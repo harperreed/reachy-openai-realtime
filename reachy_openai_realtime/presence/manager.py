@@ -134,8 +134,8 @@ class PresenceManager:
         self._lock = threading.Lock()
         self._pending: _PendingWake | None = None
         self._session_stop: threading.Event | None = None
-        self._wake_latched = False
-        self._wake_latch_reason: str | None = None
+        self._wake_latch: tuple[bool, str | None] = (False, None)
+        self._manual_rearm_reserved = False
         self._app_stop: Any = None
         self._subscription: AudioSubscription | None = None
         self._worker: WakeWordWorker | None = None
@@ -162,10 +162,15 @@ class PresenceManager:
         return self._states.state
 
     def snapshot(self) -> dict[str, Any]:
+        """Return manager observability without taking the lifecycle lock.
+
+        Writers replace the immutable latch pair while holding ``_lock``. This
+        gives the two latch fields one shared instant, while allowing transition
+        observers to snapshot safely. The separately-read FSM state can lag the
+        latch during an in-flight transition.
+        """
         worker = self._worker
-        with self._lock:
-            wake_latched = self._wake_latched
-            wake_latch_reason = self._wake_latch_reason
+        wake_latched, wake_latch_reason = self._wake_latch
         return {
             "state": self._states.state.name.lower(),
             "wake_latched": wake_latched,
@@ -238,9 +243,13 @@ class PresenceManager:
         """Worker-thread callback. Arm at most one wake, and only from SLEEPING."""
         ignored_latched = False
         with self._lock:
-            if self._wake_latched:
+            if self._wake_latch[0]:
                 ignored_latched = True
-            elif self._pending is not None or self._states.state is not PresenceState.SLEEPING:
+            elif (
+                self._manual_rearm_reserved
+                or self._pending is not None
+                or self._states.state is not PresenceState.SLEEPING
+            ):
                 return
             else:
                 wake_audio = self._assembler.collect(event.detected_at)
@@ -267,16 +276,22 @@ class PresenceManager:
             state = self._states.state
             if state not in (PresenceState.SLEEPING, PresenceState.ERROR):
                 return {"ok": False, "state": state.name.lower(), "reason": "not_sleeping"}
-            if self._pending is not None:
+            if self._pending is not None or self._manual_rearm_reserved:
                 return {"ok": False, "state": state.name.lower(), "reason": "wake_in_progress"}
-            latch_cleared = self._wake_latched
-            self._wake_latched = False
-            self._wake_latch_reason = None
-            self._pending = _PendingWake(wake_audio=None, event=None)
-            self._states.transition(PresenceState.WAKING, reason="manual_wake")
+            latch_cleared = self._wake_latch[0]
+            if latch_cleared:
+                self._wake_latch = (False, None)
+                self._manual_rearm_reserved = True
+            else:
+                self._pending = _PendingWake(wake_audio=None, event=None)
+                self._states.transition(PresenceState.WAKING, reason="manual_wake")
         if latch_cleared:
             self._status.set_wake_latch(False, None)
             self._status.record_event("wake.manual_rearm", reason="noise_bail")
+            with self._lock:
+                self._manual_rearm_reserved = False
+                self._pending = _PendingWake(wake_audio=None, event=None)
+                self._states.transition(PresenceState.WAKING, reason="manual_wake")
         self._status.record_event("wake.manual", action="wake")
         if self._wake_motion_enabled:
             self._motion.wake_acknowledge()
@@ -344,8 +359,7 @@ class PresenceManager:
             latched = outcome is SessionOutcome.NOISE_BAIL
             with self._lock:
                 if latched:
-                    self._wake_latched = True
-                    self._wake_latch_reason = "noise_bail"
+                    self._wake_latch = (True, "noise_bail")
                 self._pending = None
                 self._session_stop = None
             if latched:
