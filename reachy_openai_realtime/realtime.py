@@ -835,10 +835,7 @@ class RealtimeRobotSession:
         self._camera_capture_task = None
         if task is None:
             return False
-        try:
-            return await task
-        except asyncio.CancelledError:
-            return False
+        return await task
 
     async def _capture_and_send_camera_image(self) -> bool:
         capture = getattr(self, "_capture_camera_jpeg", None)

@@ -282,6 +282,62 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     assert "Reply only in natural English" in instructions
 
 
+def test_record_loop_cancellation_during_camera_capture_stops_before_commit() -> None:
+    stop_event = FakeStopEvent()
+    frames = (
+        [stereo_frame(-50.0) for _ in range(10)]
+        + [stereo_frame(-30.0) for _ in range(15)]
+        + [stereo_frame(-60.0) for _ in range(40)]
+    )
+    session = _manual_turn_session(frames, stop_event)
+    camera_started = asyncio.Event()
+    camera_tasks: list[asyncio.Task[bool]] = []
+
+    async def blocked_camera_item(**kwargs: object) -> None:
+        assert kwargs["item"]
+        task = asyncio.current_task()
+        assert task is not None
+        camera_tasks.append(task)
+        camera_started.set()
+        await asyncio.Event().wait()
+
+    async def cancel_record_loop() -> tuple[bool, list[str]]:
+        record_task = asyncio.create_task(session._record_loop(stop_event), name="record-loop-test")
+        await asyncio.wait_for(camera_started.wait(), timeout=2.0)
+        record_task.cancel()
+        cancellation_propagated = False
+        try:
+            await record_task
+        except asyncio.CancelledError:
+            cancellation_propagated = True
+        await asyncio.sleep(0)
+        leaked_tasks = [
+            task.get_name()
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task() and not task.done()
+        ]
+        return cancellation_propagated, leaked_tasks
+
+    session.connection.conversation.item.create = blocked_camera_item  # type: ignore[method-assign]
+    session._capture.start()
+    session._audio = session._capture.subscribe("realtime")
+    try:
+        cancellation_propagated, leaked_tasks = asyncio.run(cancel_record_loop())
+    finally:
+        session._capture.close()
+
+    assert (
+        cancellation_propagated,
+        session.connection.input_audio_buffer.committed,
+        session.connection.response.created,
+    ) == (True, 0, 0)
+    assert len(camera_tasks) == 1
+    assert camera_tasks[0].get_name() == "speech-camera-capture"
+    assert camera_tasks[0].cancelled()
+    assert session._camera_capture_task is None
+    assert leaked_tasks == []
+
+
 def test_record_loop_fifth_turn_stops_before_commit_or_response() -> None:
     stop_event = FakeStopEvent()
     camera_captures: list[bool] = []
