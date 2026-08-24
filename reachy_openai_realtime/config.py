@@ -143,15 +143,6 @@ class AppConfig:
     max_wake_buffer_seconds: int = 10
     wake_motion_enabled: bool = True
     boot_motion_enabled: bool = True
-    # Anti-runaway backstop. The wall clock is the hard "never runs away"
-    # guarantee (no classification, nothing can defeat it); the transcript
-    # counter is the fast bail. Either knob at 0 disables that backstop.
-    noise_bail_turns: int = 3
-    noise_bail_session_minutes: int = 30
-    # Enables input-audio transcription so a wordless transcript can flag a noise
-    # turn. Metered per committed turn (real speech too), not free. "" disables.
-    input_transcription_model: str = "whisper-1"
-
     def __post_init__(self) -> None:
         threshold = min(1.0, self.wake_threshold) if self.wake_threshold > 0.0 else 0.70
         object.__setattr__(self, "wake_threshold", threshold)
@@ -159,8 +150,6 @@ class AppConfig:
         object.__setattr__(self, "wake_history_seconds", _clamp(self.wake_history_seconds, 1.0, 10.0))
         object.__setattr__(self, "wake_preroll_ms", int(_clamp(self.wake_preroll_ms, 100, 1000)))
         object.__setattr__(self, "max_wake_buffer_seconds", int(_clamp(self.max_wake_buffer_seconds, 2, 30)))
-        object.__setattr__(self, "noise_bail_turns", max(0, int(self.noise_bail_turns)))
-        object.__setattr__(self, "noise_bail_session_minutes", max(0, int(self.noise_bail_session_minutes)))
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -202,11 +191,4 @@ class AppConfig:
             ),
             wake_motion_enabled=_env_bool("REACHY_OPENAI_REALTIME_WAKE_MOTION", cls.wake_motion_enabled),
             boot_motion_enabled=_env_bool("REACHY_OPENAI_REALTIME_BOOT_MOTION", cls.boot_motion_enabled),
-            noise_bail_turns=_env_int("REACHY_OPENAI_REALTIME_NOISE_BAIL_TURNS", cls.noise_bail_turns),
-            noise_bail_session_minutes=_env_int(
-                "REACHY_OPENAI_REALTIME_NOISE_BAIL_SESSION_MINUTES", cls.noise_bail_session_minutes
-            ),
-            input_transcription_model=os.getenv(
-                "REACHY_OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", cls.input_transcription_model
-            ),
         )

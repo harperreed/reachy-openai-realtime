@@ -5,7 +5,6 @@ import base64
 import json
 import logging
 import math
-import re
 import threading
 import time
 import uuid
@@ -16,7 +15,6 @@ from typing import Any
 import numpy as np
 from openai import AsyncOpenAI
 from openai.types.realtime import (
-    AudioTranscriptionParam,
     RealtimeAudioConfigInputParam,
     RealtimeAudioConfigOutputParam,
     RealtimeAudioConfigParam,
@@ -51,6 +49,7 @@ from .memory.tools import (
 )
 from .motion import MotionManager
 from .runtime_status import RuntimeStatus, safe_message
+from .session.circuit_breaker import SESSION_LIMIT_SECONDS, TURN_RATE_WINDOW_SECONDS, TurnRateCircuitBreaker
 from .session.fsm import SessionState, SessionStateMachine
 from .session.recovery import BackoffPolicy, ErrorClass, SessionOutcome, classify_connection_error
 from .session.supervisor import (
@@ -69,21 +68,6 @@ from .tool_executor import (
 from .vad import EnergyTurnDetector
 
 logger = logging.getLogger(__name__)
-
-
-def _is_garbage_transcript(transcript: str) -> bool:
-    """True when a committed turn produced no recognizable words — the noise
-    signal for the anti-runaway backstop.
-
-    Two tiers, both Unicode-safe: an empty transcript, or one with no word
-    character at all (only punctuation or symbols). ``\\w`` matches CJK and
-    accented scripts, so a lone real word like "好" is spared; the wall-clock
-    ceiling backstops the fragments this deliberately lets through (a bare
-    consonant, or Whisper hallucinating a word on noise)."""
-    stripped = transcript.strip()
-    if not stripped:
-        return True
-    return re.search(r"\w", stripped) is None
 
 
 class DoAPoller:
@@ -196,10 +180,10 @@ class RealtimeRobotSession:
         self._playback_started_at: float | None = None
         self._playback_pushed_ms = 0.0
         self._interrupted_response_ids: RecentIds = RecentIds()
-        # Consecutive wordless-transcript turns; the transcript fast-bail counter.
-        # Survives reconnect on purpose (see _note_user_transcript) — not reset in
-        # reset_connection_state like the per-socket state above it.
-        self._noise_turn_count = 0
+        # This session-wide breaker survives reconnects, so a socket reset cannot
+        # turn five rapid false turns into another five-turn allowance.
+        self._turn_rate_breaker = TurnRateCircuitBreaker()
+        self._noise_bailed = False
         self._camera_capture_task: asyncio.Task[bool] | None = None
         self._last_camera_item_id: str | None = None
         self._pending_camera_items: dict[str, int] = {}
@@ -273,50 +257,88 @@ class RealtimeRobotSession:
         self._speaker.start()
         self.status.record_event("audio.playback.started")
         self._session_started_at = time.monotonic()
+        reconnect_task = asyncio.create_task(self._run_reconnect_loop(stop_event))
+        stop_waiter = asyncio.create_task(self._await_stop(stop_event))
+        deadline = asyncio.create_task(asyncio.sleep(SESSION_LIMIT_SECONDS))
         try:
-            backoff = BackoffPolicy()
-            while not stop_event.is_set():
-                self.connection_epoch += 1
-                self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
-                self.status.record_event("realtime.connecting", epoch=self.connection_epoch)
-                connected_at = time.monotonic()
-                error: BaseException | None = None
-                try:
-                    await self._run_connection(stop_event)
-                except asyncio.CancelledError:
-                    raise
-                except AudioPipelineStalled:
-                    raise  # escalation: main.py rebuilds the entire app session (mic ladder attempt 3)
-                except Exception as exc:  # noqa: BLE001 — every connection error is classified, never re-raised
-                    error = exc
-                if stop_event.is_set():
-                    break
-                self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
-                await self.reset_connection_state()
-                if error is not None:
-                    self.status.record_error(f"realtime connection failed: {error}")
-                    if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
-                        self.status.set_phase("error", "設定エラーが発生しました", connected=False, detail_key="detail_error")
-                        self.status.record_event("realtime.error", fatal=True, message=str(error))
-                        self.fsm.transition(SessionState.STOPPING, reason="fatal_config_error")
-                        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
-                        return SessionOutcome.FATAL_CONFIG
-                backoff.note_session_duration(time.monotonic() - connected_at)
-                delay = backoff.next_delay()
-                self.status.record_event("realtime.reconnect", delay_seconds=round(delay, 2))
-                self.status.metrics.increment("reconnect_count")
-                await self._sleep_unless_stopped(stop_event, delay)
-            self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
+            done, _ = await asyncio.wait(
+                {reconnect_task, stop_waiter, deadline}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if deadline in done and not stop_event.is_set():
+                self._noise_bailed = True
+                session_age = time.monotonic() - self._session_started_at
+                self.status.record_event(
+                    "noise_bail.wall_clock",
+                    session_age_seconds=round(session_age, 2),
+                    limit_seconds=SESSION_LIMIT_SECONDS,
+                )
+                stop_event.set()
+
+            elif reconnect_task in done:
+                return reconnect_task.result()
+
+            reconnect_task.cancel()
+            await asyncio.gather(reconnect_task, return_exceptions=True)
+            reason = "noise_bail" if self._noise_bailed else "stop_requested"
+            self.fsm.transition(SessionState.STOPPING, reason=reason)
             await self.reset_connection_state()
             self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
-            return SessionOutcome.STOPPED
+            return SessionOutcome.NOISE_BAIL if self._noise_bailed else SessionOutcome.STOPPED
         finally:
+            stop_waiter.cancel()
+            deadline.cancel()
+            reconnect_task.cancel()
+            await asyncio.gather(stop_waiter, deadline, reconnect_task, return_exceptions=True)
             self._speaker.close()
             self._capture.unsubscribe("realtime")
             self._audio = None
             self.status.record_event("audio.capture.stopped")
             self.status.set_component_health("microphone", False, expires=False)
             self.status.set_component_health("speaker", False, expires=False)
+
+    async def _run_reconnect_loop(self, stop_event: Any) -> SessionOutcome:
+        backoff = BackoffPolicy()
+        while not stop_event.is_set():
+            self.connection_epoch += 1
+            self.fsm.transition(SessionState.CONNECTING, reason="connect_attempt")
+            self.status.record_event("realtime.connecting", epoch=self.connection_epoch)
+            connected_at = time.monotonic()
+            error: BaseException | None = None
+            try:
+                await self._run_connection(stop_event)
+            except asyncio.CancelledError:
+                raise
+            except AudioPipelineStalled:
+                raise  # escalation: main.py rebuilds the entire app session (mic ladder attempt 3)
+            except Exception as exc:  # noqa: BLE001 — every connection error is classified, never re-raised
+                error = exc
+            if stop_event.is_set():
+                break
+            self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
+            await self.reset_connection_state()
+            if error is not None:
+                self.status.record_error(f"realtime connection failed: {error}")
+                if self._noise_bailed:
+                    self.fsm.transition(SessionState.STOPPING, reason="noise_bail")
+                    self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+                    return SessionOutcome.NOISE_BAIL
+                if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
+                    self.status.set_phase(
+                        "error", "設定エラーが発生しました", connected=False, detail_key="detail_error"
+                    )
+                    self.status.record_event("realtime.error", fatal=True, message=str(error))
+                    self.fsm.transition(SessionState.STOPPING, reason="fatal_config_error")
+                    self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+                    return SessionOutcome.FATAL_CONFIG
+            backoff.note_session_duration(time.monotonic() - connected_at)
+            delay = backoff.next_delay()
+            self.status.record_event("realtime.reconnect", delay_seconds=round(delay, 2))
+            self.status.metrics.increment("reconnect_count")
+            await self._sleep_unless_stopped(stop_event, delay)
+        self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
+        await self.reset_connection_state()
+        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+        return SessionOutcome.NOISE_BAIL if self._noise_bailed else SessionOutcome.STOPPED
 
     async def _sleep_unless_stopped(self, stop_event: Any, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -434,13 +456,6 @@ class RealtimeRobotSession:
             noise_reduction={"type": "far_field"},
             turn_detection=None,
         )
-        # Enable input transcription so a committed turn yields a transcript the
-        # noise bail can read. Metered per committed turn (real speech too); a
-        # blank model disables it and leaves the wall-clock ceiling as the guard.
-        if self.config.input_transcription_model:
-            audio_input["transcription"] = AudioTranscriptionParam(
-                model=self.config.input_transcription_model
-            )
         return RealtimeSessionCreateRequestParam(
             type="realtime",
             instructions=instructions,
@@ -548,7 +563,6 @@ class RealtimeRobotSession:
                 self.status.record_event("vad.started", reason="wake_turn")
                 self.motion.set_listening_enabled(True)
                 self.motion.set_idle_enabled(False)
-                self._start_camera_capture()
                 self.status.set_phase(
                     "user_speaking",
                     "音声を聞いています",
@@ -679,7 +693,6 @@ class RealtimeRobotSession:
                     {"state": "start"},
                     True,
                 )
-                self._start_camera_capture()
                 self.motion.set_idle_enabled(False)
                 self.status.set_phase(
                     "user_speaking",
@@ -708,6 +721,15 @@ class RealtimeRobotSession:
 
             if decision.stopped:
                 self.status.record_event("vad.stopped", reason=decision.reason)
+                if self._turn_rate_breaker.record_turn(time.monotonic()):
+                    self._noise_bailed = True
+                    self.status.record_event(
+                        "noise_bail.rate_limit",
+                        turns=self._turn_rate_breaker.turn_count,
+                        window_seconds=TURN_RATE_WINDOW_SECONDS,
+                    )
+                    stop_event.set()
+                    return
                 self.fsm.transition(SessionState.WAITING_RESPONSE, reason="turn_committed")
                 self._response_generation_done = False
                 self.motion.set_listening_enabled(False)
@@ -731,6 +753,7 @@ class RealtimeRobotSession:
                 )
                 # Ensure the image item is in the conversation before the audio
                 # message is committed and response generation starts.
+                self._start_camera_capture()
                 await self._finish_camera_capture()
                 self.watchdog.arm("input_append")
                 await self.connection.input_audio_buffer.commit()
@@ -812,10 +835,7 @@ class RealtimeRobotSession:
         self._camera_capture_task = None
         if task is None:
             return False
-        try:
-            return await task
-        except asyncio.CancelledError:
-            return False
+        return await task
 
     async def _capture_and_send_camera_image(self) -> bool:
         capture = getattr(self, "_capture_camera_jpeg", None)
@@ -1085,13 +1105,6 @@ class RealtimeRobotSession:
                 transcript = (event.transcript or "").strip()
                 logger.info("Reachy: %s", transcript)
                 self.status.record_transcript("assistant", transcript)
-            elif event_type == "conversation.item.input_audio_transcription.completed":
-                # A committed user turn transcribed. Feed the noise bail and record
-                # it for the dashboard. No file log of the transcript: room speech
-                # stays in memory-only status, unlike Reachy's own output above.
-                transcript = (getattr(event, "transcript", "") or "").strip()
-                self.status.record_transcript("user", transcript)
-                self._note_user_transcript(transcript, stop_event)
             elif event_type == "response.output_audio.done":
                 if str(event.response_id) not in self._interrupted_response_ids:
                     self._speaker_busy_until += 0.3
@@ -1370,29 +1383,14 @@ class RealtimeRobotSession:
             self.status.add_event(f"protocol watchdog: {exc.operation} timed out", level="warning")
             raise
 
-    async def _supervisor_loop(self, stop_event: Any) -> None:
+    async def _supervisor_loop(self, _stop_event: Any) -> None:
         """FSM-inactivity check (spec §24): a non-LISTENING state with no
         transition for 120s means something wedged with no watchdog armed.
         Raising WatchdogTimeout reuses the classify→TRANSIENT→reconnect path.
 
-        Also enforces the anti-runaway wall-clock ceiling: noise keeps the FSM
-        moving, so the inactivity check is blind to a runaway. Once the whole
-        session outlives noise_bail_session_minutes, set the stop flag — a clean
-        stop→sleep, NOT a reconnect — bounding the worst case regardless of what
-        the transcript classifier does."""
-        ceiling_seconds = self.config.noise_bail_session_minutes * 60
+        The run-scoped deadline owns the independent anti-runaway ceiling."""
         while True:
             await asyncio.sleep(SUPERVISOR_POLL_SECONDS)
-            if ceiling_seconds > 0 and self._session_started_at is not None:
-                session_age = time.monotonic() - self._session_started_at
-                if session_age >= ceiling_seconds:
-                    self.status.record_event(
-                        "noise_bail.wall_clock",
-                        session_age_seconds=round(session_age, 1),
-                        limit_minutes=self.config.noise_bail_session_minutes,
-                    )
-                    stop_event.set()
-                    return
             state = self.fsm.state
             age = time.monotonic() - self._last_fsm_transition_at
             if state is not SessionState.LISTENING and age > FSM_INACTIVITY_LIMIT_SECONDS:
@@ -1401,30 +1399,6 @@ class RealtimeRobotSession:
                     check="fsm_inactivity", state=state.name, age_seconds=round(age, 1),
                 )
                 raise WatchdogTimeout("fsm_inactivity", FSM_INACTIVITY_LIMIT_SECONDS)
-
-    def _note_user_transcript(self, transcript: str, stop_event: Any) -> None:
-        """Fast noise bail: count consecutive wordless committed turns and, once
-        noise_bail_turns land in a row, set the stop flag for a clean stop→sleep.
-        A turn with real words resets the count. The count deliberately survives
-        a reconnect (like _session_started_at, and unlike the per-socket state in
-        reset_connection_state) — noise does not stop being noise because the
-        socket blipped. noise_bail_turns == 0 disables this; the wall-clock
-        ceiling still guards."""
-        limit = self.config.noise_bail_turns
-        if limit <= 0:
-            return
-        if not _is_garbage_transcript(transcript):
-            self._noise_turn_count = 0
-            return
-        self._noise_turn_count += 1
-        self.status.record_event(
-            "noise_bail.turn",
-            consecutive=self._noise_turn_count,
-            limit=limit,
-        )
-        if self._noise_turn_count >= limit:
-            self.status.record_event("noise_bail.triggered", consecutive=self._noise_turn_count)
-            stop_event.set()
 
     def _nap_idle(self) -> bool:
         return (

@@ -146,6 +146,8 @@
     memory_empty: ["No memories yet", "まだ何も覚えていません", "暂无记忆", "아직 기억이 없습니다", "Sin recuerdos aún", "Aucun souvenir pour le moment", "Noch keine Einträge", "Nessun ricordo ancora", "Ainda sem memórias"],
     memory_unavailable: ["Memory unavailable", "メモリーは利用できません", "记忆不可用", "메모리를 사용할 수 없습니다", "Memoria no disponible", "Mémoire indisponible", "Gedächtnis nicht verfügbar", "Memoria non disponibile", "Memória indisponível"],
     wake_title: ["Wake word"],
+    presence_latched: ["Safety sleep · use Wake now"],
+    presence_latched_always_on: ["Safety sleep · restart app to rearm"],
     presence_booting: ["Starting up"],
     presence_sleeping: ["Asleep · say “hey reachy”"],
     presence_waking: ["Waking up…"],

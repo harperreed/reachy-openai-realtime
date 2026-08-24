@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..session.recovery import SessionOutcome
 from ..wakeword.buffer import AudioRingBuffer
 from ..wakeword.worker import WakeEvent, WakeWordWorker
 from .states import PresenceState, PresenceStateMachine
@@ -44,6 +45,10 @@ class _EitherStop:
 
     def is_set(self) -> bool:
         return self._primary.is_set() or self._secondary.is_set()
+
+    def set(self) -> None:
+        """Request this session to stop without stopping the whole app."""
+        self._secondary.set()
 
     def wait(self, timeout: float | None = None) -> bool:
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -122,14 +127,15 @@ class PresenceManager:
         self._ring_buffer = AudioRingBuffer(history_seconds=history_seconds)
         self._assembler = WakeAudioAssembler(self._ring_buffer, pre_roll_seconds=pre_roll_seconds)
 
-        # _lock guards _pending and _session_stop; it is always taken BEFORE the
-        # state-machine lock (never the reverse). transition() releases the state
-        # lock before it calls _handle_transition, and _on_wake/request_wake call
-        # transition() while holding _lock, so _handle_transition runs with _lock
-        # still held by the same thread and must not take _lock (it would deadlock).
+        # _lock guards lifecycle state; it is always taken BEFORE the state-machine
+        # lock (never the reverse). transition() releases the state lock before it
+        # calls _handle_transition, and _on_wake/request_wake call transition()
+        # while holding _lock, so _handle_transition must not take _lock.
         self._lock = threading.Lock()
         self._pending: _PendingWake | None = None
         self._session_stop: threading.Event | None = None
+        self._wake_latch: tuple[bool, str | None] = (False, None)
+        self._manual_rearm_reserved = False
         self._app_stop: Any = None
         self._subscription: AudioSubscription | None = None
         self._worker: WakeWordWorker | None = None
@@ -156,9 +162,19 @@ class PresenceManager:
         return self._states.state
 
     def snapshot(self) -> dict[str, Any]:
+        """Return manager observability without taking the lifecycle lock.
+
+        Writers replace the immutable latch pair while holding ``_lock``. This
+        gives the two latch fields one shared instant, while allowing transition
+        observers to snapshot safely. The separately-read FSM state can lag the
+        latch during an in-flight transition.
+        """
         worker = self._worker
+        wake_latched, wake_latch_reason = self._wake_latch
         return {
             "state": self._states.state.name.lower(),
+            "wake_latched": wake_latched,
+            "wake_latch_reason": wake_latch_reason,
             "wake_count": worker.wake_count if worker is not None else 0,
             "frames_total": worker.frames_total if worker is not None else 0,
             "restart_count": worker.restart_count if worker is not None else 0,
@@ -225,17 +241,28 @@ class PresenceManager:
 
     def _on_wake(self, event: WakeEvent) -> None:
         """Worker-thread callback. Arm at most one wake, and only from SLEEPING."""
+        ignored_latched = False
         with self._lock:
-            if self._pending is not None or self._states.state is not PresenceState.SLEEPING:
+            if self._wake_latch[0]:
+                ignored_latched = True
+            elif (
+                self._manual_rearm_reserved
+                or self._pending is not None
+                or self._states.state is not PresenceState.SLEEPING
+            ):
                 return
-            wake_audio = self._assembler.collect(event.detected_at)
-            self._pending = _PendingWake(wake_audio=wake_audio, event=event)
-            self._last_wake = {
-                "id": event.id,
-                "phrase": event.phrase,
-                "score": round(event.score, 3),
-            }
-            self._states.transition(PresenceState.WAKING, reason="wake_word")
+            else:
+                wake_audio = self._assembler.collect(event.detected_at)
+                self._pending = _PendingWake(wake_audio=wake_audio, event=event)
+                self._last_wake = {
+                    "id": event.id,
+                    "phrase": event.phrase,
+                    "score": round(event.score, 3),
+                }
+                self._states.transition(PresenceState.WAKING, reason="wake_word")
+        if ignored_latched:
+            self._status.record_event("wake.ignored", reason="noise_bail_latched")
+            return
         # Outside the lock: the pre-roll was flushed from history into this wake.
         self._status.record_event("wake.detected", phrase=event.phrase, score=round(event.score, 3))
         self._status.record_event("wake.buffer_flushed", frames=len(wake_audio))
@@ -249,10 +276,22 @@ class PresenceManager:
             state = self._states.state
             if state not in (PresenceState.SLEEPING, PresenceState.ERROR):
                 return {"ok": False, "state": state.name.lower(), "reason": "not_sleeping"}
-            if self._pending is not None:
+            if self._pending is not None or self._manual_rearm_reserved:
                 return {"ok": False, "state": state.name.lower(), "reason": "wake_in_progress"}
-            self._pending = _PendingWake(wake_audio=None, event=None)
-            self._states.transition(PresenceState.WAKING, reason="manual_wake")
+            latch_cleared = self._wake_latch[0]
+            if latch_cleared:
+                self._wake_latch = (False, None)
+                self._manual_rearm_reserved = True
+            else:
+                self._pending = _PendingWake(wake_audio=None, event=None)
+                self._states.transition(PresenceState.WAKING, reason="manual_wake")
+        if latch_cleared:
+            self._status.set_wake_latch(False, None)
+            self._status.record_event("wake.manual_rearm", reason="noise_bail")
+            with self._lock:
+                self._manual_rearm_reserved = False
+                self._pending = _PendingWake(wake_audio=None, event=None)
+                self._states.transition(PresenceState.WAKING, reason="manual_wake")
         self._status.record_event("wake.manual", action="wake")
         if self._wake_motion_enabled:
             self._motion.wake_acknowledge()
@@ -308,17 +347,24 @@ class PresenceManager:
 
         combined = _EitherStop(self._app_stop, session_stop)
         self._status.record_event("wake.connection_start")
+        outcome = SessionOutcome.STOPPED
         try:
-            asyncio.run(session.run(combined))
+            outcome = asyncio.run(session.run(combined))
         except Exception as error:  # a crashed session is a failed turn, not a crash of the app
             logger.exception("wake session crashed")
             self._status.record_error(f"wake session crashed: {error}")
         finally:
             session_stop.set()
             watchdog.join(timeout=1.0)
+            latched = outcome is SessionOutcome.NOISE_BAIL
             with self._lock:
+                if latched:
+                    self._wake_latch = (True, "noise_bail")
                 self._pending = None
                 self._session_stop = None
+            if latched:
+                self._status.set_wake_latch(True, "noise_bail")
+                self._status.record_event("presence.noise_bail_latched", reason="noise_bail")
             self._finish_session(app_stopping=self._app_stop.is_set())
 
     def _finish_session(self, *, app_stopping: bool) -> None:

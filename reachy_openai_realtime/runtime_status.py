@@ -38,6 +38,8 @@ class RuntimeStatus:
         self._last_assistant: str | None = None
         self._last_motion: str | None = None
         self._presence_state: str | None = None
+        self._wake_latched = False
+        self._wake_latch_reason: str | None = None
         self._mic_dbfs: float | None = None
         self._mic_peak_dbfs: float | None = None
         self._mic_channel_dbfs: list[float] = []
@@ -86,6 +88,12 @@ class RuntimeStatus:
             self._presence_state = state_name
             if state_name == "sleeping":
                 self._connected = False
+            self._updated_at = _now()
+
+    def set_wake_latch(self, latched: bool, reason: str | None) -> None:
+        with self._lock:
+            self._wake_latched = latched
+            self._wake_latch_reason = safe_message(reason) if latched and reason else None
             self._updated_at = _now()
 
     def set_phase(
@@ -403,6 +411,8 @@ class RuntimeStatus:
                 "detail_params": dict(self._detail_params),
                 "connected": self._connected,
                 "presence": self._presence_state,
+                "wake_latched": self._wake_latched,
+                "wake_latch_reason": self._wake_latch_reason,
                 "last_error": self._last_error,
                 "last_user": self._last_user,
                 "last_assistant": self._last_assistant,

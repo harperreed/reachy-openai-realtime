@@ -215,6 +215,20 @@ def test_presence_defaults_to_none_before_any_transition():
     assert RuntimeStatus().snapshot()["presence"] is None
 
 
+def test_wake_latch_is_exposed_and_can_be_cleared() -> None:
+    status = RuntimeStatus()
+    assert status.snapshot()["wake_latched"] is False
+    assert status.snapshot()["wake_latch_reason"] is None
+
+    status.set_wake_latch(True, "turn_rate")
+    assert status.snapshot()["wake_latched"] is True
+    assert status.snapshot()["wake_latch_reason"] == "turn_rate"
+
+    status.set_wake_latch(False, None)
+    assert status.snapshot()["wake_latched"] is False
+    assert status.snapshot()["wake_latch_reason"] is None
+
+
 def test_record_audio_sample_exposes_vad_backend() -> None:
     status = RuntimeStatus()
     # Default: no vad_backend kwarg — should surface "energy" in snapshot

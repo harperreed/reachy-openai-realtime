@@ -79,39 +79,15 @@ def test_session_config_without_catalogs_keeps_base_tools_only() -> None:
     assert "play_emotion accepts" not in config["instructions"]
 
 
-def test_session_uses_client_turn_detection_and_far_field_noise_reduction() -> None:
+def test_session_uses_client_turn_detection_without_paid_input_transcription() -> None:
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
     session.config = AppConfig()
     session.motion = _StubMotion()
 
-    config = session._session_config()
-    audio_input = config["audio"]["input"]
+    audio_input = session._session_config()["audio"]["input"]
 
     assert audio_input["turn_detection"] is None
     assert audio_input["noise_reduction"] == {"type": "far_field"}
-    assert audio_input["transcription"] == {"model": "whisper-1"}
-    assert "configured conversation language is English" in config["instructions"]
-
-
-def test_session_config_enables_input_transcription_by_default() -> None:
-    # The wordless-transcript noise bail needs a transcript to read; enabling
-    # input transcription is what makes OpenAI emit one per committed turn.
-    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
-    session.config = AppConfig()
-    session.motion = _StubMotion()
-
-    audio_input = session._session_config()["audio"]["input"]
-    assert audio_input["transcription"] == {"model": "whisper-1"}
-
-
-def test_session_config_omits_transcription_when_model_blank() -> None:
-    # Empty model disables transcription (and its per-turn billing); the bail
-    # then leans entirely on the wall-clock ceiling.
-    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
-    session.config = AppConfig(input_transcription_model="")
-    session.motion = _StubMotion()
-
-    audio_input = session._session_config()["audio"]["input"]
     assert "transcription" not in audio_input
 
 
@@ -185,33 +161,13 @@ def test_from_env_wake_enabled_defaults_true_when_unset(monkeypatch):
     assert AppConfig.from_env().wake_enabled is True
 
 
-def test_noise_bail_defaults():
-    config = AppConfig()
-    assert config.noise_bail_turns == 3
-    assert config.noise_bail_session_minutes == 30
-    assert config.input_transcription_model == "whisper-1"
+def test_obsolete_noise_guard_environment_does_not_change_config(monkeypatch) -> None:
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_TURNS", "999")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_SESSION_MINUTES", "999")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "whisper-1")
 
-
-def test_noise_bail_turns_and_minutes_clamped_non_negative():
-    # 0 (or below) disables a backstop; a negative env typo must never wrap into
-    # an always-armed or never-armed absurd value.
-    assert AppConfig(noise_bail_turns=-2).noise_bail_turns == 0
-    assert AppConfig(noise_bail_session_minutes=-5).noise_bail_session_minutes == 0
-
-
-def test_from_env_parses_noise_bail_settings(monkeypatch):
-    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_TURNS", "5")
-    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_SESSION_MINUTES", "15")
-    monkeypatch.setenv("REACHY_OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe")
     config = AppConfig.from_env()
-    assert config.noise_bail_turns == 5
-    assert config.noise_bail_session_minutes == 15
-    assert config.input_transcription_model == "gpt-4o-mini-transcribe"
 
-
-def test_from_env_noise_bail_bad_numbers_fall_back_to_defaults(monkeypatch):
-    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_TURNS", "not-a-number")
-    monkeypatch.setenv("REACHY_OPENAI_REALTIME_NOISE_BAIL_SESSION_MINUTES", "garbage")
-    config = AppConfig.from_env()
-    assert config.noise_bail_turns == 3
-    assert config.noise_bail_session_minutes == 30
+    assert not hasattr(config, "noise_bail_turns")
+    assert not hasattr(config, "noise_bail_session_minutes")
+    assert not hasattr(config, "input_transcription_model")

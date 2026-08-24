@@ -5,6 +5,7 @@ const removeButton = document.getElementById("remove-button");
 const message = document.getElementById("message");
 const languageSelect = document.getElementById("language-select");
 const i18n = window.ReachyI18n;
+const statusClassifier = window.ReachyStatus;
 let firstConfigRender = true;
 let refreshInFlight = false;
 let refreshMemoryInFlight = false;
@@ -243,8 +244,15 @@ function renderRuntime(status) {
 
   const presenceStates = ["booting", "sleeping", "waking", "awake", "error"];
   const presence = presenceStates.includes(status.presence) ? status.presence : null;
+  const safetyMode = statusClassifier.classifySafetySleep(status);
   const wakeState = document.getElementById("wake-state");
-  wakeState.textContent = presence ? t(`presence_${presence}`) : t("wake_disabled");
+  wakeState.textContent = safetyMode === "wake"
+    ? t("presence_latched")
+    : safetyMode === "always_on"
+      ? t("presence_latched_always_on")
+    : presence
+      ? t(`presence_${presence}`)
+      : t("wake_disabled");
   wakeState.classList.toggle("ready", presence === "awake");
   // Enable each control only from a state its endpoint accepts: request_wake
   // takes SLEEPING or ERROR, request_sleep takes AWAKE (Task 14/§24).

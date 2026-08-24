@@ -56,7 +56,9 @@
   before they enter session instructions — dataset filenames are third-party input.
 - **Two robots, one hostname.** Daytime robot `192.168.23.184`, night robot `192.168.200.128`,
   both `pollen@` / hostname `reachy-mini` with different host keys — a "HOST IDENTIFICATION
-  CHANGED" warning between them is expected, but compare fingerprints before accepting.
+  CHANGED" warning between them is expected, but compare fingerprints before accepting. Before
+  any robot action, restate the resolved label and IP; a correction from daytime to nighttime must
+  be applied before issuing the command.
 - **Daemon API sharp edges** (port 8000): `POST /api/daemon/start` requires `?wake_up=true|false`
   (422 without it); job-status JSON embeds raw control chars — `tr -d '\000-\010\013-\037'`
   before jq; a crashed app STAYS in the app slot serving a stale error and refusing new starts —
@@ -147,32 +149,10 @@
   are preserved, so the reconnect path is untouched (`tests/test_realtime_teardown.py`). Recovery on
   a pre-fix build: `POST /api/apps/stop-current-app`. Found on night robot 2026-08-22 (manual wake
   worked; manual sleep hung; had to stop the app).
-- **Anti-runaway backstop: two mechanisms, both bail by SETTING the stop flag, never raising**
-  (branch `noise-bail-tourniquet`, not merged/pushed/deployed as of 2026-08-23). Root cause of the
-  runaway: the ReSpeaker fires `speech_detected` on ~27% of ambient noise, so the turn-gate opens on
-  noise, commits noise "turns," and fires `response.create` per turn with nothing bounding it — it
-  runs to the 60-min cap, reconnects, and continues. Two independent backstops now bound it:
-  (1) **Wall-clock ceiling** — the hard "never runs away" guarantee, no classification. In
-  `_supervisor_loop`, once the whole session outlives `noise_bail_session_minutes` (default 30) it
-  sets the stop flag. Measured from `_session_started_at`, which is set once at `run()` start and
-  deliberately NOT reset in `reset_connection_state`, so it survives a reconnect storm (distinct from
-  the per-socket `_connected_at`). `noise_bail_session_minutes=0` disables it.
-  (2) **Transcript counter** — the fast bail. `_is_garbage_transcript` flags a committed turn that
-  transcribes to no word characters (empty, or only punctuation/symbols; `\w` is Unicode so CJK like
-  "好" is spared). `_note_user_transcript` counts consecutive wordless turns and at `noise_bail_turns`
-  (default 3) sets the stop flag; a real-word turn resets the count. This counter ALSO survives
-  reconnect on purpose (mirrors the ceiling) — not in `reset_connection_state`. `noise_bail_turns=0`
-  disables it. Both mechanisms depend on the teardown fix `3036352`: setting the stop flag only
-  sleeps a live session because `_run_connection` races the task group against the flag. Raising
-  instead would drive the reconnect path (wrong for a noise bail — you want stop→sleep, wake-armed).
-- **The transcript bail needs input transcription ON, which is metered per committed turn — NOT free.**
-  `_session_config` enables `audio.input.transcription` (`input_transcription_model`, default
-  `whisper-1`; blank disables). OpenAI then emits `conversation.item.input_audio_transcription.completed`
-  per committed turn (its `usage` field bills tokens on EVERY turn, real speech included, not just
-  garbage). The user transcript is recorded to in-memory `RuntimeStatus` for the dashboard but is NOT
-  written to the file log — room speech stays memory-only, unlike Reachy's own output which logs at INFO.
-- **Below the bail threshold the robot still speaks ≤N-1 noise replies before sleeping.** `response.create`
-  fires when a noise turn commits, before its transcript arrives, so turns 1..N-1 produce spoken replies
-  (bounded, then sleep). Cancelling the in-flight response on a garbage transcript (reusing the barge-in /
-  `_interrupted_response_ids` machinery) was evaluated and DEFERRED: it races the already-started response
-  and risks self-interrupting a real brief utterance, for the marginal gain of silencing ≤2 short replies.
+- **Anti-runaway backstop: two transcript-free mechanisms bail by setting the stop flag, never raising.**
+  ReSpeaker ambient noise can open the turn gate, commit false turns, and create responses. The local
+  breaker stops on the fifth turn in 60 seconds before that turn commits or creates a response. It
+  survives reconnects. The wall-clock ceiling is fixed at 30 minutes, measured from session start,
+  and also survives reconnects. Transcript classification was removed: word-like noise resets it and
+  input transcription costs money. `_EitherStop.set()` targets the session-local event. A noise bail
+  latches wake words until manual wake or app restart.

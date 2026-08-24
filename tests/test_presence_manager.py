@@ -7,10 +7,13 @@ import numpy as np
 import pytest
 
 from reachy_openai_realtime.audio.fanout import AudioFrame, AudioSubscription
-from reachy_openai_realtime.presence.manager import PresenceManager, WakeAudioAssembler
+from reachy_openai_realtime.presence.manager import PresenceManager, WakeAudioAssembler, _EitherStop
 from reachy_openai_realtime.presence.states import PresenceState, PresenceStateMachine
+from reachy_openai_realtime.runtime_status import RuntimeStatus
+from reachy_openai_realtime.session.recovery import SessionOutcome
 from reachy_openai_realtime.wakeword.base import WakeWordDetection
 from reachy_openai_realtime.wakeword.buffer import AudioRingBuffer
+from reachy_openai_realtime.wakeword.worker import WakeEvent
 
 
 def test_starts_booting_and_boots_to_sleeping():
@@ -61,6 +64,18 @@ def test_error_recovers_via_waking():
     fsm.transition(PresenceState.SLEEPING, reason="boot")
     fsm.transition(PresenceState.ERROR, reason="model_download_failed")
     fsm.transition(PresenceState.WAKING, reason="manual_wake")
+
+
+def test_either_stop_set_targets_session_event_only() -> None:
+    app_stop = threading.Event()
+    session_stop = threading.Event()
+    combined = _EitherStop(app_stop, session_stop)
+
+    combined.set()
+
+    assert combined.is_set() is True
+    assert session_stop.is_set() is True
+    assert app_stop.is_set() is False
 
 
 # --- PresenceManager + WakeAudioAssembler (Task 11) ---
@@ -151,6 +166,7 @@ class FakeStatus:
     def __init__(self):
         self.events = []
         self.errors = []
+        self.wake_latches: list[tuple[bool, str | None]] = []
 
     def record_event(self, event, **fields):
         self.events.append((event, fields))
@@ -158,37 +174,87 @@ class FakeStatus:
     def record_error(self, error):
         self.errors.append(error)
 
+    def set_wake_latch(self, latched: bool, reason: str | None) -> None:
+        self.wake_latches.append((latched, reason))
+
 
 class FakeSession:
-    def __init__(self, *, pending_wake_audio=None, on_session_ready=None):
+    def __init__(self, *, pending_wake_audio=None, on_session_ready=None, outcome=SessionOutcome.STOPPED):
         self.pending_wake_audio = pending_wake_audio
         self._on_session_ready = on_session_ready
+        self.outcome = outcome
         self.ran = False
 
     async def run(self, stop_event):
         self.ran = True
         if self._on_session_ready is not None:
             self._on_session_ready()
+        if self.outcome is SessionOutcome.NOISE_BAIL:
+            return self.outcome
         while not stop_event.is_set():
             await asyncio.sleep(0.01)
-        return "STOPPED"
+        return self.outcome
 
 
 class SessionRecorder:
     """A session_factory stand-in. connect=False withholds the ready callback
     so the connect deadline fires (the failed-connection path, spec §20)."""
 
-    def __init__(self, *, connect=True):
+    def __init__(self, *, connect=True, outcomes: list[SessionOutcome] | None = None):
         self.sessions = []
         self._connect = connect
+        self._outcomes = list(outcomes or [])
 
     def __call__(self, *, pending_wake_audio=None, on_session_ready=None):
+        outcome = self._outcomes.pop(0) if self._outcomes else SessionOutcome.STOPPED
         session = FakeSession(
             pending_wake_audio=pending_wake_audio,
             on_session_ready=on_session_ready if self._connect else None,
+            outcome=outcome,
         )
         self.sessions.append(session)
         return session
+
+
+class GatedNoiseBailSession:
+    def __init__(self, *, pending_wake_audio=None, on_session_ready=None, return_gate=None):
+        self.pending_wake_audio = pending_wake_audio
+        self._on_session_ready = on_session_ready
+        self._return_gate = return_gate
+
+    async def run(self, stop_event):
+        if self._on_session_ready is not None:
+            self._on_session_ready()
+        if self._return_gate is not None:
+            await asyncio.to_thread(self._return_gate.wait)
+        return SessionOutcome.NOISE_BAIL
+
+
+class RearmOrderingStatus(RuntimeStatus):
+    """Coordinates the old stale-publication window without timing sleeps."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.manager: PresenceManager | None = None
+        self.events: list[tuple[str, dict[str, object]]] = []
+        self.false_publication_started = threading.Event()
+        self.second_noise_bail_published = threading.Event()
+        self._noise_bail_publications = 0
+
+    def record_event(self, event: str, **fields: object) -> None:
+        self.events.append((event, fields))
+        super().record_event(event, **fields)
+
+    def set_wake_latch(self, latched: bool, reason: str | None) -> None:
+        if not latched:
+            self.false_publication_started.set()
+            if self.manager is not None and self.manager.state is PresenceState.WAKING:
+                assert self.second_noise_bail_published.wait(timeout=3.0)
+        super().set_wake_latch(latched, reason)
+        if latched and reason == "noise_bail":
+            self._noise_bail_publications += 1
+            if self._noise_bail_publications == 2:
+                self.second_noise_bail_published.set()
 
 
 @contextlib.contextmanager
@@ -201,6 +267,7 @@ def _running(manager):
     finally:
         stop.set()
         thread.join(timeout=3.0)
+        assert not thread.is_alive(), "PresenceManager.run() did not stop within 3 s"
 
 
 def test_wake_audio_assembler_returns_preroll_before_detection():
@@ -278,6 +345,151 @@ def test_manual_wake_builds_session_without_preroll():
     assert ("wake.manual", {"action": "wake"}) in status.events  # spec §27
 
 
+def test_noise_bail_latches_wake_word_until_manual_wake() -> None:
+    capture = FakeCapture()
+    factory = SessionRecorder(
+        connect=True,
+        outcomes=[SessionOutcome.NOISE_BAIL, SessionOutcome.STOPPED],
+    )
+    status = FakeStatus()
+    manager = PresenceManager(
+        capture=capture,
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=factory,
+        status=status,
+    )
+
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: manager.snapshot()["wake_latched"] is True)
+        assert manager.snapshot()["wake_latch_reason"] == "noise_bail"
+        assert manager.state is PresenceState.SLEEPING
+
+        manager._on_wake(
+            WakeEvent(
+                id="ignored",
+                detected_at=time.monotonic(),
+                phrase="hey reachy",
+                score=0.99,
+            )
+        )
+        assert _wait_until(
+            lambda: ("wake.ignored", {"reason": "noise_bail_latched"}) in status.events
+        )
+        assert len(factory.sessions) == 1
+
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: len(factory.sessions) == 2)
+        assert manager.snapshot()["wake_latched"] is False
+        assert manager.snapshot()["wake_latch_reason"] is None
+
+
+def test_manual_rearm_cannot_publish_stale_clear_after_second_noise_bail() -> None:
+    second_bail_gate = threading.Event()
+    status = RearmOrderingStatus()
+    sessions: list[GatedNoiseBailSession] = []
+
+    def session_factory(*, pending_wake_audio=None, on_session_ready=None):
+        session = GatedNoiseBailSession(
+            pending_wake_audio=pending_wake_audio,
+            on_session_ready=on_session_ready,
+            return_gate=second_bail_gate if sessions else None,
+        )
+        sessions.append(session)
+        return session
+
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=session_factory,
+        status=status,
+    )
+    status.manager = manager
+
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: manager.snapshot()["wake_latched"] is True)
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+
+        result: list[dict[str, object]] = []
+        rearm_thread = threading.Thread(
+            target=lambda: result.append(manager.request_wake()),
+            name="manual-rearm-test",
+        )
+        rearm_thread.start()
+        assert status.false_publication_started.wait(timeout=3.0)
+        second_bail_gate.set()
+        rearm_thread.join(timeout=3.0)
+        assert not rearm_thread.is_alive(), "manual wake did not return"
+        assert result == [{"ok": True, "state": "waking"}]
+        assert status.second_noise_bail_published.wait(timeout=3.0)
+
+        manager_latch = manager.snapshot()
+        status_latch = status.snapshot()
+        assert (manager_latch["wake_latched"], manager_latch["wake_latch_reason"]) == (
+            True,
+            "noise_bail",
+        )
+        assert (status_latch["wake_latched"], status_latch["wake_latch_reason"]) == (
+            True,
+            "noise_bail",
+        )
+        manager._on_wake(
+            WakeEvent(
+                id="ignored-after-second-bail",
+                detected_at=time.monotonic(),
+                phrase="hey reachy",
+                score=0.99,
+            )
+        )
+        assert ("wake.ignored", {"reason": "noise_bail_latched"}) in status.events
+
+
+def test_transition_observer_can_snapshot_during_wake() -> None:
+    observed: list[dict[str, object]] = []
+    callback_completed = threading.Event()
+    manager_holder: dict[str, PresenceManager] = {}
+
+    def observer(old, new, reason) -> None:
+        if reason == "wake_word":
+            observed.append(manager_holder["manager"].snapshot())
+            callback_completed.set()
+
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=SessionRecorder(),
+        status=FakeStatus(),
+        on_transition=observer,
+    )
+    manager_holder["manager"] = manager
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    callback_thread = threading.Thread(
+        target=lambda: manager._on_wake(
+            WakeEvent(
+                id="callback-snapshot",
+                detected_at=time.monotonic(),
+                phrase="hey reachy",
+                score=0.99,
+            )
+        ),
+        name="wake-callback-test",
+        daemon=True,
+    )
+
+    callback_thread.start()
+    callback_thread.join(timeout=0.3)
+
+    assert not callback_thread.is_alive(), "transition observer deadlocked on manager.snapshot()"
+    assert callback_completed.is_set()
+    assert (observed[-1]["wake_latched"], observed[-1]["wake_latch_reason"]) == (False, None)
+
+
 def test_manual_sleep_ends_active_session():
     factory = SessionRecorder(connect=True)
     manager = PresenceManager(
@@ -295,6 +507,27 @@ def test_manual_sleep_ends_active_session():
         assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
 
     assert factory.sessions[0].ran is True
+
+
+def test_manual_sleep_leaves_wake_unlatched():
+    factory = SessionRecorder(connect=True)
+    status = FakeStatus()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=factory,
+        status=status,
+    )
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: manager.state is PresenceState.AWAKE)
+        assert manager.request_sleep()["ok"] is True
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.snapshot()["wake_latched"] is False
+
+    assert status.wake_latches == []
 
 
 def test_request_sleep_while_asleep_is_rejected():
@@ -347,3 +580,48 @@ def test_failed_connection_returns_to_sleeping_with_failure_motion():
 
     assert factory.sessions[0].ran is True
     assert manager.snapshot()["state"] == "sleeping"
+
+
+def test_failed_connection_leaves_wake_unlatched():
+    factory = SessionRecorder(connect=False)
+    status = FakeStatus()
+    motion = FakeMotion()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=motion,
+        session_factory=factory,
+        status=status,
+        connect_timeout_seconds=0.3,
+    )
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: "fail" in motion.calls)
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.snapshot()["wake_latched"] is False
+
+    assert status.wake_latches == []
+
+
+def test_session_exception_leaves_wake_unlatched():
+    class RaisingSession:
+        async def run(self, stop_event):
+            raise RuntimeError("test session failure")
+
+    status = FakeStatus()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=lambda **_kwargs: RaisingSession(),
+        status=status,
+    )
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        snapshot = manager.snapshot()
+        assert (snapshot["wake_latched"], snapshot["wake_latch_reason"]) == (False, None)
+
+    assert status.wake_latches == []
