@@ -137,6 +137,72 @@ def test_noise_bail_wins_when_fatal_error_arrives_after_stop_check() -> None:
     session._capture.close()
 
 
+def test_deadline_wins_when_fatal_reconnect_finishes_in_same_wait_cycle(monkeypatch) -> None:
+    monkeypatch.setattr(realtime_mod, "SESSION_LIMIT_SECONDS", 0)
+    attempts: list[int] = []
+    session = make_session(ConnectionError("unused"), attempts)
+    recorder = FakeRecorder()
+    session.status.attach_recorder(recorder)
+    app_stop = threading.Event()
+    session_stop = threading.Event()
+    combined_stop = _EitherStop(app_stop, session_stop)
+
+    async def fatal_reconnect(stop_event: object) -> SessionOutcome:
+        return SessionOutcome.FATAL_CONFIG
+
+    async def finish_same_wait_cycle(tasks, *, return_when):
+        task_set = set(tasks)
+        stop_waiters = {
+            task for task in task_set if task.get_coro().__qualname__.endswith("._await_stop")
+        }
+        assert return_when is asyncio.FIRST_COMPLETED
+        assert len(stop_waiters) == 1
+        completed = task_set - stop_waiters
+        await asyncio.gather(*completed)
+        return completed, stop_waiters
+
+    session._run_reconnect_loop = fatal_reconnect  # type: ignore[method-assign]
+    monkeypatch.setattr(realtime_mod.asyncio, "wait", finish_same_wait_cycle)
+    try:
+        outcome = asyncio.run(session.run(combined_stop))
+    finally:
+        session._capture.close()
+
+    assert outcome is SessionOutcome.NOISE_BAIL
+    assert session_stop.is_set()
+    assert not app_stop.is_set()
+    assert [event for event, _ in recorder.events].count("noise_bail.wall_clock") == 1
+
+
+def test_external_stop_wins_when_deadline_finishes_in_same_wait_cycle(monkeypatch) -> None:
+    monkeypatch.setattr(realtime_mod, "SESSION_LIMIT_SECONDS", 0)
+    attempts: list[int] = []
+    session = make_session(ConnectionError("unused"), attempts)
+    recorder = FakeRecorder()
+    session.status.attach_recorder(recorder)
+    stop_event = threading.Event()
+    stop_event.set()
+
+    async def stopped_reconnect(stop_event: object) -> SessionOutcome:
+        return SessionOutcome.STOPPED
+
+    async def finish_same_wait_cycle(tasks, *, return_when):
+        assert return_when is asyncio.FIRST_COMPLETED
+        task_set = set(tasks)
+        await asyncio.gather(*task_set)
+        return task_set, set()
+
+    session._run_reconnect_loop = stopped_reconnect  # type: ignore[method-assign]
+    monkeypatch.setattr(realtime_mod.asyncio, "wait", finish_same_wait_cycle)
+    try:
+        outcome = asyncio.run(session.run(stop_event))
+    finally:
+        session._capture.close()
+
+    assert outcome is SessionOutcome.STOPPED
+    assert [event for event, _ in recorder.events].count("noise_bail.wall_clock") == 0
+
+
 def test_run_wall_clock_ceiling_cancels_blocked_connection_attempt(monkeypatch) -> None:
     monkeypatch.setattr(realtime_mod, "SESSION_LIMIT_SECONDS", 0.05)
     attempts: list[int] = []

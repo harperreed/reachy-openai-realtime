@@ -375,9 +375,10 @@ def test_noise_bail_latches_wake_word_until_manual_wake() -> None:
                 score=0.99,
             )
         )
-        time.sleep(0.05)
+        assert _wait_until(
+            lambda: ("wake.ignored", {"reason": "noise_bail_latched"}) in status.events
+        )
         assert len(factory.sessions) == 1
-        assert ("wake.ignored", {"reason": "noise_bail_latched"}) in status.events
 
         assert manager.request_wake()["ok"] is True
         assert _wait_until(lambda: len(factory.sessions) == 2)

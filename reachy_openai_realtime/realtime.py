@@ -264,9 +264,6 @@ class RealtimeRobotSession:
             done, _ = await asyncio.wait(
                 {reconnect_task, stop_waiter, deadline}, return_when=asyncio.FIRST_COMPLETED
             )
-            if reconnect_task in done:
-                return reconnect_task.result()
-
             if deadline in done and not stop_event.is_set():
                 self._noise_bailed = True
                 session_age = time.monotonic() - self._session_started_at
@@ -276,6 +273,9 @@ class RealtimeRobotSession:
                     limit_seconds=SESSION_LIMIT_SECONDS,
                 )
                 stop_event.set()
+
+            elif reconnect_task in done:
+                return reconnect_task.result()
 
             reconnect_task.cancel()
             await asyncio.gather(reconnect_task, return_exceptions=True)
