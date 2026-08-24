@@ -56,7 +56,9 @@
   before they enter session instructions — dataset filenames are third-party input.
 - **Two robots, one hostname.** Daytime robot `192.168.23.184`, night robot `192.168.200.128`,
   both `pollen@` / hostname `reachy-mini` with different host keys — a "HOST IDENTIFICATION
-  CHANGED" warning between them is expected, but compare fingerprints before accepting.
+  CHANGED" warning between them is expected, but compare fingerprints before accepting. Before
+  any robot action, restate the resolved label and IP; a correction from daytime to nighttime must
+  be applied before issuing the command.
 - **Daemon API sharp edges** (port 8000): `POST /api/daemon/start` requires `?wake_up=true|false`
   (422 without it); job-status JSON embeds raw control chars — `tr -d '\000-\010\013-\037'`
   before jq; a crashed app STAYS in the app slot serving a stale error and refusing new starts —
@@ -147,8 +149,8 @@
   are preserved, so the reconnect path is untouched (`tests/test_realtime_teardown.py`). Recovery on
   a pre-fix build: `POST /api/apps/stop-current-app`. Found on night robot 2026-08-22 (manual wake
   worked; manual sleep hung; had to stop the app).
-- **Anti-runaway backstop: two mechanisms, both bail by SETTING the stop flag, never raising**
-  (branch `noise-bail-tourniquet`, not merged/pushed/deployed as of 2026-08-23). Root cause of the
+- **Anti-runaway backstop: two mechanisms, both bail by SETTING the stop flag, never raising.**
+  This version was deployed on 2026-08-23 and proved insufficient on 2026-08-24. Root cause of the
   runaway: the ReSpeaker fires `speech_detected` on ~27% of ambient noise, so the turn-gate opens on
   noise, commits noise "turns," and fires `response.create` per turn with nothing bounding it — it
   runs to the 60-min cap, reconnects, and continues. Two independent backstops now bound it:
@@ -165,6 +167,13 @@
   disables it. Both mechanisms depend on the teardown fix `3036352`: setting the stop flag only
   sleeps a live session because `_run_connection` races the task group against the flag. Raising
   instead would drive the reconnect path (wrong for a noise bail — you want stop→sleep, wake-armed).
+- **The deployed transcript guard does not bound spend and its production stop signal is broken.**
+  Night Reachy produced 25 response requests in about three minutes because Whisper returned
+  word-like noise fragments such as `you`, resetting the wordless counter. `_EitherStop` also lacks
+  the `set()` method both guards call, so a threshold would raise rather than cleanly sleep. The
+  approved replacement is a transcript-free five-turn/60-second breaker checked before commit,
+  followed by sleep latched against wake words until manual wake or app restart. Keep night Reachy
+  stopped until that replacement passes review and hardware acceptance.
 - **The transcript bail needs input transcription ON, which is metered per committed turn — NOT free.**
   `_session_config` enables `audio.input.transcription` (`input_transcription_model`, default
   `whisper-1`; blank disables). OpenAI then emits `conversation.item.input_audio_transcription.completed`
