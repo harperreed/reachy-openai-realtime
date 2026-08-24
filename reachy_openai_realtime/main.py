@@ -590,6 +590,16 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                                 if current != stale_fingerprint:
                                     break
                                 stop_event.wait(2.0)
+                        elif outcome is SessionOutcome.NOISE_BAIL:
+                            self.runtime_status.set_phase(
+                                "safety_sleep",
+                                "Safety sleep is active; restart the app to rearm",
+                                connected=False,
+                                event=True,
+                                detail_key="detail_safety_sleep",
+                            )
+                            while not stop_event.is_set():
+                                stop_event.wait(0.2)
         finally:
             self._presence = None
             capture.close()

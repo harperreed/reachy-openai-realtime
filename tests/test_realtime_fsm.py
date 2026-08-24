@@ -12,6 +12,7 @@ from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
+from reachy_openai_realtime.session.circuit_breaker import TurnRateCircuitBreaker
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.vad import EnergyTurnDetector
@@ -56,6 +57,8 @@ def make_session(frames, stop_event) -> RealtimeRobotSession:
     session._pending_wake_audio = None
     session._wake_ready = False
     session._on_session_ready = None
+    session._turn_rate_breaker = TurnRateCircuitBreaker()
+    session._noise_bailed = False
     return session
 
 

@@ -51,6 +51,7 @@ from .memory.tools import (
 )
 from .motion import MotionManager
 from .runtime_status import RuntimeStatus, safe_message
+from .session.circuit_breaker import SESSION_LIMIT_SECONDS, TURN_RATE_WINDOW_SECONDS, TurnRateCircuitBreaker
 from .session.fsm import SessionState, SessionStateMachine
 from .session.recovery import BackoffPolicy, ErrorClass, SessionOutcome, classify_connection_error
 from .session.supervisor import (
@@ -80,10 +81,7 @@ def _is_garbage_transcript(transcript: str) -> bool:
     accented scripts, so a lone real word like "好" is spared; the wall-clock
     ceiling backstops the fragments this deliberately lets through (a bare
     consonant, or Whisper hallucinating a word on noise)."""
-    stripped = transcript.strip()
-    if not stripped:
-        return True
-    return re.search(r"\w", stripped) is None
+    return re.search(r"\w", transcript.strip()) is None
 
 
 class DoAPoller:
@@ -196,6 +194,10 @@ class RealtimeRobotSession:
         self._playback_started_at: float | None = None
         self._playback_pushed_ms = 0.0
         self._interrupted_response_ids: RecentIds = RecentIds()
+        # This session-wide breaker survives reconnects, so a socket reset cannot
+        # turn five rapid false turns into another five-turn allowance.
+        self._turn_rate_breaker = TurnRateCircuitBreaker()
+        self._noise_bailed = False
         # Consecutive wordless-transcript turns; the transcript fast-bail counter.
         # Survives reconnect on purpose (see _note_user_transcript) — not reset in
         # reset_connection_state like the per-socket state above it.
@@ -309,7 +311,7 @@ class RealtimeRobotSession:
             self.fsm.transition(SessionState.STOPPING, reason="stop_requested")
             await self.reset_connection_state()
             self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
-            return SessionOutcome.STOPPED
+            return SessionOutcome.NOISE_BAIL if self._noise_bailed else SessionOutcome.STOPPED
         finally:
             self._speaker.close()
             self._capture.unsubscribe("realtime")
@@ -708,6 +710,15 @@ class RealtimeRobotSession:
 
             if decision.stopped:
                 self.status.record_event("vad.stopped", reason=decision.reason)
+                if self._turn_rate_breaker.record_turn(time.monotonic()):
+                    self._noise_bailed = True
+                    self.status.record_event(
+                        "noise_bail.rate_limit",
+                        turns=self._turn_rate_breaker.turn_count,
+                        window_seconds=TURN_RATE_WINDOW_SECONDS,
+                    )
+                    stop_event.set()
+                    return
                 self.fsm.transition(SessionState.WAITING_RESPONSE, reason="turn_committed")
                 self._response_generation_done = False
                 self.motion.set_listening_enabled(False)
@@ -1375,21 +1386,20 @@ class RealtimeRobotSession:
         transition for 120s means something wedged with no watchdog armed.
         Raising WatchdogTimeout reuses the classify→TRANSIENT→reconnect path.
 
-        Also enforces the anti-runaway wall-clock ceiling: noise keeps the FSM
-        moving, so the inactivity check is blind to a runaway. Once the whole
-        session outlives noise_bail_session_minutes, set the stop flag — a clean
-        stop→sleep, NOT a reconnect — bounding the worst case regardless of what
-        the transcript classifier does."""
-        ceiling_seconds = self.config.noise_bail_session_minutes * 60
+        Also enforces the fixed anti-runaway wall-clock ceiling: noise keeps the
+        FSM moving, so the inactivity check is blind to a runaway. Once the
+        whole session outlives the limit, set the stop flag — a clean stop→sleep,
+        not a reconnect."""
         while True:
             await asyncio.sleep(SUPERVISOR_POLL_SECONDS)
-            if ceiling_seconds > 0 and self._session_started_at is not None:
+            if self._session_started_at is not None:
                 session_age = time.monotonic() - self._session_started_at
-                if session_age >= ceiling_seconds:
+                if session_age >= SESSION_LIMIT_SECONDS:
+                    self._noise_bailed = True
                     self.status.record_event(
                         "noise_bail.wall_clock",
                         session_age_seconds=round(session_age, 1),
-                        limit_minutes=self.config.noise_bail_session_minutes,
+                        limit_seconds=SESSION_LIMIT_SECONDS,
                     )
                     stop_event.set()
                     return

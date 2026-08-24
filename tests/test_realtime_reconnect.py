@@ -95,3 +95,15 @@ def test_transient_error_retries_with_new_epoch_until_stop() -> None:
     assert outcome is SessionOutcome.STOPPED
     assert attempts == [1, 2, 3]
     session._capture.close()
+
+
+def test_noise_bail_stop_returns_distinct_outcome() -> None:
+    attempts: list[int] = []
+    session = make_session(ConnectionError("unused"), attempts)
+    session._noise_bailed = True
+    stop_event = threading.Event()
+    stop_event.set()
+
+    assert asyncio.run(session.run(stop_event)) is SessionOutcome.NOISE_BAIL
+
+    session._capture.close()

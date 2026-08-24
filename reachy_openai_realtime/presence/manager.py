@@ -45,6 +45,10 @@ class _EitherStop:
     def is_set(self) -> bool:
         return self._primary.is_set() or self._secondary.is_set()
 
+    def set(self) -> None:
+        """Request this session to stop without stopping the whole app."""
+        self._secondary.set()
+
     def wait(self, timeout: float | None = None) -> bool:
         deadline = None if timeout is None else time.monotonic() + timeout
         while not self.is_set():

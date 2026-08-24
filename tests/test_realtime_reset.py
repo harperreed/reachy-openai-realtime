@@ -12,6 +12,7 @@ from reachy_openai_realtime.audio.capture import AudioPipelineStalled, AudioReco
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
 from reachy_openai_realtime.realtime import RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
+from reachy_openai_realtime.session.circuit_breaker import TurnRateCircuitBreaker
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.tool_executor import ToolExecutor
@@ -46,6 +47,7 @@ def make_dirty_session() -> RealtimeRobotSession:
     drive_fsm(session.fsm, SessionState.ASSISTANT_SPEAKING)
     session.connection_epoch = 3
     session._response_generation_done = False
+    session._turn_rate_breaker = TurnRateCircuitBreaker()
     session._playback = PlaybackBuffer()
     session._playback.push(dirty_chunk())
     session._speaker = SpeakerWorker(FakeSpeakerMedia())
@@ -78,6 +80,7 @@ def make_dirty_session() -> RealtimeRobotSession:
 
 def test_reset_connection_state_clears_spec_checklist() -> None:
     session = make_dirty_session()
+    assert session._turn_rate_breaker.record_turn(time.monotonic()) is False
 
     class FakeMotion:
         def stop_current(self) -> None:
@@ -101,6 +104,7 @@ def test_reset_connection_state_clears_spec_checklist() -> None:
     assert session._response_generation_done is True
     assert session._vad.speech_active is False
     assert session.watchdog.expired() is None  # watchdog.clear() was called
+    assert session._turn_rate_breaker.turn_count == 1
 
 
 def test_stale_epoch_tool_outputs_are_dropped_by_flush_filter() -> None:

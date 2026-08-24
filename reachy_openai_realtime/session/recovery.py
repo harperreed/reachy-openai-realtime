@@ -45,6 +45,7 @@ class ErrorClass(Enum):
 
 class SessionOutcome(Enum):
     STOPPED = auto()
+    NOISE_BAIL = auto()
     FATAL_CONFIG = auto()
 
 

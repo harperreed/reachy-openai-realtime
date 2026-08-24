@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from reachy_openai_realtime.audio.fanout import AudioFrame, AudioSubscription
-from reachy_openai_realtime.presence.manager import PresenceManager, WakeAudioAssembler
+from reachy_openai_realtime.presence.manager import PresenceManager, WakeAudioAssembler, _EitherStop
 from reachy_openai_realtime.presence.states import PresenceState, PresenceStateMachine
 from reachy_openai_realtime.wakeword.base import WakeWordDetection
 from reachy_openai_realtime.wakeword.buffer import AudioRingBuffer
@@ -61,6 +61,18 @@ def test_error_recovers_via_waking():
     fsm.transition(PresenceState.SLEEPING, reason="boot")
     fsm.transition(PresenceState.ERROR, reason="model_download_failed")
     fsm.transition(PresenceState.WAKING, reason="manual_wake")
+
+
+def test_either_stop_set_targets_session_event_only() -> None:
+    app_stop = threading.Event()
+    session_stop = threading.Event()
+    combined = _EitherStop(app_stop, session_stop)
+
+    combined.set()
+
+    assert combined.is_set() is True
+    assert session_stop.is_set() is True
+    assert app_stop.is_set() is False
 
 
 # --- PresenceManager + WakeAudioAssembler (Task 11) ---

@@ -13,6 +13,7 @@ from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession, RecentIds
 from reachy_openai_realtime.runtime_status import RuntimeStatus
+from reachy_openai_realtime.session.circuit_breaker import TurnRateCircuitBreaker
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.tool_executor import ToolExecutor
@@ -25,6 +26,9 @@ class FakeStopEvent:
 
     def is_set(self) -> bool:
         return self.stopped
+
+    def set(self) -> None:
+        self.stopped = True
 
 
 class FakeInputAudioBuffer:
@@ -209,13 +213,7 @@ def test_doa_poller_never_blocks_caller_when_usb_read_stalls() -> None:
     release_read.set()
 
 
-def test_record_loop_manually_commits_after_local_silence() -> None:
-    stop_event = FakeStopEvent()
-    frames = (
-        [stereo_frame(-50.0) for _ in range(10)]
-        + [stereo_frame(-30.0) for _ in range(15)]
-        + [stereo_frame(-60.0) for _ in range(40)]
-    )
+def _manual_turn_session(frames: list[np.ndarray], stop_event: FakeStopEvent) -> RealtimeRobotSession:
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
     session.robot = type("Robot", (), {"media": FakeMedia(frames)})()
     session.motion = FakeMotion()
@@ -242,9 +240,21 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     session._pending_wake_audio = None
     session._wake_ready = False
     session._on_session_ready = None
-
+    session._turn_rate_breaker = TurnRateCircuitBreaker()
+    session._noise_bailed = False
     session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
     session._mic_ladder = AudioRecoveryLadder()
+    return session
+
+
+def test_record_loop_manually_commits_after_local_silence() -> None:
+    stop_event = FakeStopEvent()
+    frames = (
+        [stereo_frame(-50.0) for _ in range(10)]
+        + [stereo_frame(-30.0) for _ in range(15)]
+        + [stereo_frame(-60.0) for _ in range(40)]
+    )
+    session = _manual_turn_session(frames, stop_event)
     session._capture.start()
     session._audio = session._capture.subscribe("realtime")
     asyncio.run(session._record_loop(stop_event))
@@ -262,6 +272,29 @@ def test_record_loop_manually_commits_after_local_silence() -> None:
     assert session.status.snapshot()["phase"] == "thinking"
     instructions = session.connection.response.last_response["instructions"]
     assert "Reply only in natural English" in instructions
+
+
+def test_record_loop_fifth_turn_stops_before_commit_or_response() -> None:
+    stop_event = FakeStopEvent()
+    frames = (
+        [stereo_frame(-50.0) for _ in range(10)]
+        + [stereo_frame(-30.0) for _ in range(15)]
+        + [stereo_frame(-60.0) for _ in range(40)]
+    )
+    session = _manual_turn_session(frames, stop_event)
+    now = time.monotonic()
+    for offset in (-4.0, -3.0, -2.0, -1.0):
+        assert session._turn_rate_breaker.record_turn(now + offset) is False
+
+    session._capture.start()
+    session._audio = session._capture.subscribe("realtime")
+    asyncio.run(session._record_loop(stop_event))
+    session._capture.close()
+
+    assert stop_event.is_set() is True
+    assert session.connection.input_audio_buffer.committed == 0
+    assert session.connection.response.created == 0
+    assert session._noise_bailed is True
 
 
 def test_camera_image_uses_data_uri_and_replaces_previous_image() -> None:
@@ -411,6 +444,8 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session._pending_wake_audio = None
     session._wake_ready = False
     session._on_session_ready = None
+    session._turn_rate_breaker = TurnRateCircuitBreaker()
+    session._noise_bailed = False
     session.tools = ToolExecutor(
         epoch_provider=lambda: session.connection_epoch,
         on_output=lambda inv, result, output, ms: None,
@@ -484,6 +519,8 @@ def test_record_loop_injects_pending_wake_audio_as_opening_turn() -> None:
     session._wake_ready = True
     session._on_session_ready = None
     session._greeting_sent = False
+    session._turn_rate_breaker = TurnRateCircuitBreaker()
+    session._noise_bailed = False
 
     session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
     session._mic_ladder = AudioRecoveryLadder()

@@ -208,6 +208,61 @@ def test_app_loop_continues_after_audio_pipeline_stalled(tmp_path, monkeypatch) 
     )
 
 
+def test_always_on_noise_bail_does_not_construct_another_session(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-noise-bail")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_ENABLED", "0")
+    monkeypatch.setattr("reachy_openai_realtime.main.time.sleep", lambda _: None)
+
+    fake_recorder = FakeRecorder()
+    fake_recorder.close = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "reachy_openai_realtime.main.EventRecorder",
+        lambda *_args, **_kwargs: fake_recorder,
+    )
+
+    state = {"constructions": 0}
+    first_session_returned = threading.Event()
+    second_session_constructed = threading.Event()
+
+    class NoiseBailSession:
+        def __init__(self, robot: Any, motion: Any, config: Any, status: Any, **kwargs: Any) -> None:
+            state["constructions"] += 1
+            self._construction = state["constructions"]
+            if self._construction == 2:
+                second_session_constructed.set()
+
+        async def run(self, stop_event_arg: Any) -> SessionOutcome:
+            if self._construction == 1:
+                first_session_returned.set()
+            return SessionOutcome.NOISE_BAIL
+
+    monkeypatch.setattr("reachy_openai_realtime.main.RealtimeRobotSession", NoiseBailSession)
+
+    app = ReachyOpenaiRealtime()
+    stop_event = threading.Event()
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            app.run(FakeRobot(), stop_event)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=_run, name="noise-bail-app-loop-test", daemon=True)
+    thread.start()
+    assert first_session_returned.wait(timeout=5.0), "first session did not return"
+    try:
+        assert not second_session_constructed.wait(timeout=0.2), "noise bail created another session"
+    finally:
+        stop_event.set()
+        thread.join(timeout=10.0)
+
+    assert not thread.is_alive(), "app.run() did not stop after noise bail"
+    assert not errors, f"app.run() raised unexpectedly: {errors}"
+    assert state["constructions"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Step 7: Escalation test (spec §24)
 # ---------------------------------------------------------------------------
