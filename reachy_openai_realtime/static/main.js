@@ -244,7 +244,11 @@ function renderRuntime(status) {
   const presenceStates = ["booting", "sleeping", "waking", "awake", "error"];
   const presence = presenceStates.includes(status.presence) ? status.presence : null;
   const wakeState = document.getElementById("wake-state");
-  wakeState.textContent = presence ? t(`presence_${presence}`) : t("wake_disabled");
+  wakeState.textContent = status.wake_latched
+    ? t("presence_latched")
+    : presence
+      ? t(`presence_${presence}`)
+      : t("wake_disabled");
   wakeState.classList.toggle("ready", presence === "awake");
   // Enable each control only from a state its endpoint accepts: request_wake
   // takes SLEEPING or ERROR, request_sleep takes AWAKE (Task 14/§24).

@@ -127,26 +127,33 @@ start_app() {
     wait_for "app readiness" 120 app_ready || return 1
     case "$APP_READY_MODE" in
         connected)
-            echo "app: ready (connected, phase $(app_phase))" ;;
+            echo "app: ready (connected, phase $(printf '%s' "$APP_READY_STATUS" | app_phase))" ;;
         sleeping)
             echo "app: ready (sleeping, wake armed)" ;;
+        latched)
+            echo "app: ready (safety sleep (manual wake required))" ;;
         *)
             echo "error: app readiness state disappeared" >&2
             return 1 ;;
     esac
 }
 app_status() { curl -fsS -m 5 "$APPDASH/api/status" | scrub; }
-app_phase() { app_status | jq -r '.phase // "?"' 2>/dev/null; }
-app_mode() { app_status | "$READY_STATE"; }
+app_phase() { jq -r '.phase // "?"' 2>/dev/null; }
+app_mode() { "$READY_STATE"; }
 APP_READY_MODE=""
+APP_READY_STATUS=""
 app_ready() {
-    APP_READY_MODE=$(app_mode) || {
+    APP_READY_STATUS=$(app_status) || {
+        APP_READY_STATUS=""
+        APP_READY_MODE=""
+        return 1
+    }
+    APP_READY_MODE=$(printf '%s' "$APP_READY_STATUS" | app_mode) || {
         APP_READY_MODE=""
         return 1
     }
     [ -n "$APP_READY_MODE" ]
 }
-app_connected() { [ "$(app_mode)" = "connected" ]; }
 
 pose_label() {
     awk -v z="$1" 'BEGIN {
@@ -157,7 +164,7 @@ pose_label() {
 }
 
 cmd_status() {
-    local daemon slot z
+    local daemon slot z runtime mode
     daemon=$(api GET /api/daemon/status)
     echo "daemon:  state=$(printf '%s' "$daemon" | jq -r .state) ready=$(printf '%s' "$daemon" | jq -r .backend_status.ready) motors=$(printf '%s' "$daemon" | jq -r .backend_status.motor_control_mode)"
     z=$(head_z)
@@ -167,11 +174,14 @@ cmd_status() {
         echo "app:     not running"
     else
         echo "app:     $(printf '%s' "$slot" | jq -r '"\(.info.name) state=\(.state)"')"
-        if app_connected; then
-            echo "realtime: connected phase=$(curl -s -m 5 "$APPDASH/api/status" | scrub | jq -r '.phase // "?"')"
-        else
-            echo "realtime: not connected"
-        fi
+        runtime=$(app_status) || { echo "realtime: status unavailable"; return; }
+        mode=$(printf '%s' "$runtime" | app_mode) || mode=""
+        case "$mode" in
+            connected) echo "realtime: connected phase=$(printf '%s' "$runtime" | app_phase)" ;;
+            sleeping)  echo "realtime: sleeping, wake armed" ;;
+            latched)   echo "realtime: safety sleep (manual wake required)" ;;
+            *)         echo "realtime: not connected" ;;
+        esac
     fi
 }
 

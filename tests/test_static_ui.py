@@ -19,11 +19,19 @@ def test_index_html_has_wake_panel() -> None:
 def test_main_js_wires_presence_and_endpoints() -> None:
     js = (STATIC / "main.js").read_text(encoding="utf-8")
     assert "status.presence" in js
+    assert "status.wake_latched" in js
     assert "/api/presence/wake" in js
     assert "/api/presence/sleep" in js
 
 
 def test_i18n_has_english_wake_rows() -> None:
     js = (STATIC / "i18n.js").read_text(encoding="utf-8")
-    for key in ("wake_title", "presence_sleeping", "wake_disabled", "wake_now", "sleep_now"):
+    for key in (
+        "wake_title",
+        "presence_sleeping",
+        "presence_latched",
+        "wake_disabled",
+        "wake_now",
+        "sleep_now",
+    ):
         assert key in js

@@ -29,6 +29,21 @@ def test_ready_state_accepts_healthy_app_modes(payload: dict[str, object], expec
     assert result.stdout.strip() == expected
 
 
+def test_ready_state_reports_latched_sleep() -> None:
+    payload = {
+        "connected": False,
+        "presence": "sleeping",
+        "wake_latched": True,
+        "wake_latch_reason": "noise_bail",
+        "last_error": None,
+    }
+    result = subprocess.run(
+        [str(READY_STATE)], input=json.dumps(payload), text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "latched"
+
+
 @pytest.mark.parametrize(
     "status_json",
     [
