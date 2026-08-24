@@ -17,7 +17,7 @@ from reachy_mini import ReachyMini, ReachyMiniApp
 from .audio.capture import AudioPipelineStalled, CaptureWorker
 from .audio_setup import apply_wireless_conversation_audio_config
 from .config import AppConfig, language_choices, language_option
-from .presence.manager import PresenceManager
+from .presence.manager import PresenceManager, _EitherStop
 from .wakeword.edge_impulse import EdgeImpulseWakeWordDetector
 from .wakeword.model_download import WakeModelError, ensure_wake_model
 
@@ -525,6 +525,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             else:
                 while not stop_event.is_set():
                     config = AppConfig.from_env()
+                    session_stop = threading.Event()
                     session = RealtimeRobotSession(
                         reachy_mini,
                         motion,
@@ -538,7 +539,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                         nap=nap,
                     )
                     try:
-                        outcome = asyncio.run(session.run(stop_event))
+                        outcome = asyncio.run(session.run(_EitherStop(stop_event, session_stop)))
                     except AudioPipelineStalled:
                         self.runtime_status.add_event("audio pipeline stalled; restarting app session", level="warning")
                         escalate = budget.record_restart(time.monotonic())

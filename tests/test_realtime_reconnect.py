@@ -6,6 +6,7 @@ import threading
 
 from reachy_openai_realtime.audio.capture import CaptureWorker
 from reachy_openai_realtime.config import AppConfig
+from reachy_openai_realtime.presence.manager import _EitherStop
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.recovery import SessionOutcome
@@ -106,4 +107,28 @@ def test_noise_bail_stop_returns_distinct_outcome() -> None:
 
     assert asyncio.run(session.run(stop_event)) is SessionOutcome.NOISE_BAIL
 
+    session._capture.close()
+
+
+def test_noise_bail_wins_when_fatal_error_arrives_after_stop_check() -> None:
+    attempts: list[int] = []
+    session = make_session(FatalConnectError(), attempts)
+    app_stop = threading.Event()
+    session_stop = threading.Event()
+    combined_stop = _EitherStop(app_stop, session_stop)
+    record_error = session.status.record_error
+
+    def mark_noise_bail_after_stop_check(error: object) -> None:
+        session._noise_bailed = True
+        combined_stop.set()
+        record_error(error)
+
+    session.status.record_error = mark_noise_bail_after_stop_check  # type: ignore[method-assign]
+
+    outcome = asyncio.run(session.run(combined_stop))
+
+    assert outcome is SessionOutcome.NOISE_BAIL
+    assert session_stop.is_set()
+    assert not app_stop.is_set()
+    assert attempts == [1]
     session._capture.close()

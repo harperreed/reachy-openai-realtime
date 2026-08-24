@@ -81,7 +81,10 @@ def _is_garbage_transcript(transcript: str) -> bool:
     accented scripts, so a lone real word like "好" is spared; the wall-clock
     ceiling backstops the fragments this deliberately lets through (a bare
     consonant, or Whisper hallucinating a word on noise)."""
-    return re.search(r"\w", transcript.strip()) is None
+    stripped = transcript.strip()
+    if not stripped:
+        return True
+    return re.search(r"\w", stripped) is None
 
 
 class DoAPoller:
@@ -297,6 +300,10 @@ class RealtimeRobotSession:
                 await self.reset_connection_state()
                 if error is not None:
                     self.status.record_error(f"realtime connection failed: {error}")
+                    if self._noise_bailed:
+                        self.fsm.transition(SessionState.STOPPING, reason="noise_bail")
+                        self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+                        return SessionOutcome.NOISE_BAIL
                     if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
                         self.status.set_phase("error", "設定エラーが発生しました", connected=False, detail_key="detail_error")
                         self.status.record_event("realtime.error", fatal=True, message=str(error))

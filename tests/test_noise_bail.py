@@ -122,6 +122,13 @@ async def _run_supervisor_until_stop(session, stop_event, *, timeout=2.0) -> Non
     await asyncio.wait_for(task, timeout=timeout)
 
 
+async def _run_supervisor_briefly(session, stop_event, *, seconds=0.1) -> None:
+    task = asyncio.create_task(session._supervisor_loop(stop_event))
+    await asyncio.sleep(seconds)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 def test_wall_clock_ceiling_marks_noise_bail_and_stops(monkeypatch) -> None:
     monkeypatch.setattr(realtime_mod, "SUPERVISOR_POLL_SECONDS", 0.01)
     session = _supervisor_session()
@@ -132,6 +139,18 @@ def test_wall_clock_ceiling_marks_noise_bail_and_stops(monkeypatch) -> None:
 
     assert stop_event.is_set()
     assert session._noise_bailed is True
+
+
+def test_wall_clock_ceiling_stays_idle_below_limit(monkeypatch) -> None:
+    monkeypatch.setattr(realtime_mod, "SUPERVISOR_POLL_SECONDS", 0.01)
+    session = _supervisor_session()
+    session._session_started_at = time.monotonic() - (SESSION_LIMIT_SECONDS - 1.0)
+    stop_event = threading.Event()
+
+    asyncio.run(_run_supervisor_briefly(session, stop_event))
+
+    assert not stop_event.is_set()
+    assert session._noise_bailed is False
 
 
 def test_supervisor_still_raises_on_fsm_inactivity(monkeypatch):

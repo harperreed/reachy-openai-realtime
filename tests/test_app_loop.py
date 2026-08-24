@@ -234,6 +234,7 @@ def test_always_on_noise_bail_does_not_construct_another_session(tmp_path, monke
 
         async def run(self, stop_event_arg: Any) -> SessionOutcome:
             if self._construction == 1:
+                stop_event_arg.set()
                 first_session_returned.set()
             return SessionOutcome.NOISE_BAIL
 
@@ -253,6 +254,10 @@ def test_always_on_noise_bail_does_not_construct_another_session(tmp_path, monke
     thread.start()
     assert first_session_returned.wait(timeout=5.0), "first session did not return"
     try:
+        thread.join(timeout=0.2)
+        assert thread.is_alive(), "noise bail stopped the app instead of entering safety sleep"
+        assert not stop_event.is_set(), "noise bail set the outer app stop"
+        assert state["constructions"] == 1
         assert not second_session_constructed.wait(timeout=0.2), "noise bail created another session"
     finally:
         stop_event.set()
