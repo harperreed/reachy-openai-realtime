@@ -1,108 +1,20 @@
-# ABOUTME: Anti-runaway backstop tests — the wall-clock ceiling (hard guarantee)
-# ABOUTME: and the wordless-transcript counter (fast bail). Both end in stop->sleep.
+# ABOUTME: Anti-runaway backstop tests — the fixed wall-clock ceiling and
+# ABOUTME: FSM-inactivity recovery remain independent stop and reconnect paths.
 import asyncio
 import threading
 import time
-from types import SimpleNamespace
 
 import pytest
-from conftest import ScriptedConnection, drive_fsm
+from conftest import drive_fsm
 
 from reachy_openai_realtime import realtime as realtime_mod
 from reachy_openai_realtime.config import AppConfig
-from reachy_openai_realtime.realtime import RealtimeRobotSession, _is_garbage_transcript
+from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.circuit_breaker import SESSION_LIMIT_SECONDS
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.supervisor import FSM_INACTIVITY_LIMIT_SECONDS
 from reachy_openai_realtime.session.watchdog import WatchdogTimeout
-
-
-@pytest.mark.parametrize("transcript", ["", "   ", "...", "!?!", "—", "  .. ! "])
-def test_garbage_transcript_flags_wordless_turns(transcript):
-    # A committed turn that transcribes to no word characters is noise, not speech.
-    assert _is_garbage_transcript(transcript) is True
-
-
-@pytest.mark.parametrize("transcript", ["yes", "ok", "mm-hmm", "助けて", "好", "k"])
-def test_garbage_transcript_spares_real_words(transcript):
-    # Any word character means real speech. \w is Unicode, so CJK counts, and a
-    # lone real letter is spared — the wall-clock ceiling backstops the residue
-    # rather than risk misreading short non-Latin words as noise.
-    assert _is_garbage_transcript(transcript) is False
-
-
-def _transcript_session(**config_kwargs) -> RealtimeRobotSession:
-    """Minimal session exercising just the noise counter."""
-    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
-    session.config = AppConfig(**config_kwargs)
-    session.status = RuntimeStatus()
-    session._noise_turn_count = 0
-    return session
-
-
-def test_noise_counter_increments_on_garbage():
-    session = _transcript_session(noise_bail_turns=3)
-    stop = threading.Event()
-    session._note_user_transcript("", stop)
-    session._note_user_transcript("...", stop)
-    assert session._noise_turn_count == 2
-    assert not stop.is_set()
-
-
-def test_noise_counter_resets_on_real_turn():
-    session = _transcript_session(noise_bail_turns=3)
-    stop = threading.Event()
-    session._note_user_transcript("", stop)
-    session._note_user_transcript("hello there", stop)
-    assert session._noise_turn_count == 0
-    session._note_user_transcript("", stop)  # counts fresh, no carryover
-    assert session._noise_turn_count == 1
-    assert not stop.is_set()
-
-
-def test_noise_counter_bails_to_sleep_at_threshold():
-    session = _transcript_session(noise_bail_turns=3)
-    stop = threading.Event()
-    for _ in range(3):
-        session._note_user_transcript("", stop)
-    assert session._noise_turn_count == 3
-    assert stop.is_set()
-
-
-def test_noise_counter_disabled_when_turns_zero():
-    session = _transcript_session(noise_bail_turns=0)
-    stop = threading.Event()
-    for _ in range(10):
-        session._note_user_transcript("", stop)
-    assert session._noise_turn_count == 0
-    assert not stop.is_set()
-
-
-class _EndOfScript(Exception):
-    """Sentinel that ends _event_loop deterministically after the scripted event."""
-
-
-def test_event_loop_routes_user_transcription_to_noise_bail():
-    # Wiring: a committed-turn transcript event must reach the noise counter and
-    # land as the user transcript in status. _note_user_transcript is tested
-    # above; this proves the dispatch chain routes the event to it.
-    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
-    session.config = AppConfig(noise_bail_turns=3)
-    session.status = RuntimeStatus()
-    session._noise_turn_count = 0
-    event = SimpleNamespace(
-        type="conversation.item.input_audio_transcription.completed",
-        transcript="...",
-    )
-    session.connection = ScriptedConnection([event], raise_after=_EndOfScript())
-    stop = threading.Event()
-
-    with pytest.raises(_EndOfScript):
-        asyncio.run(session._event_loop(stop))
-
-    assert session._noise_turn_count == 1
-    assert session.status.snapshot()["last_user"] == "..."
 
 
 def _supervisor_session() -> RealtimeRobotSession:
