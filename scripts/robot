@@ -142,7 +142,7 @@ app_status() {
     status=$(curl -fsS -m 5 "$APPDASH/api/status") || return 1
     printf '%s' "$status" | scrub
 }
-app_phase() { jq -r '.phase // "?"' 2>/dev/null; }
+app_phase() { jq -r 'if (.phase | type) == "string" then .phase else "?" end' 2>/dev/null; }
 app_mode() { "$READY_STATE"; }
 APP_READY_MODE=""
 APP_READY_STATUS=""

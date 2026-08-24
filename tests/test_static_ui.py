@@ -27,6 +27,12 @@ def test_main_js_wires_presence_and_endpoints() -> None:
     assert "/api/presence/sleep" in js
 
 
+def test_wake_button_stays_enabled_for_sleeping_safety_latch() -> None:
+    js = (STATIC / "main.js").read_text(encoding="utf-8")
+    assert '&& presence === "sleeping";' in js
+    assert 'document.getElementById("wake-button").disabled = !(presence === "sleeping" || presence === "error");' in js
+
+
 def test_i18n_has_english_wake_rows() -> None:
     js = (STATIC / "i18n.js").read_text(encoding="utf-8")
     assert 'presence_latched: ["Safety sleep · use Wake now"]' in js

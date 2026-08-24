@@ -169,3 +169,50 @@ esac
     assert "realtime: status unavailable" in result.stdout
     assert "realtime: not connected" not in result.stdout
     assert '{"' not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("status", "leaked_value"),
+    [
+        ({"connected": True, "phase": {"nested": "phase-secret"}}, "phase-secret"),
+        ({"connected": True, "phase": ["phase-secret"]}, "phase-secret"),
+        ({"connected": True, "phase": 23}, "23"),
+        ({"connected": True, "phase": True}, None),
+        ({"connected": True, "phase": None}, None),
+        ({"connected": True}, None),
+    ],
+)
+def test_status_hides_malformed_connected_phase_values(
+    tmp_path: Path, status: dict[str, object], leaked_value: str | None
+) -> None:
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+case "$*" in
+    *":8042/api/status"*) printf '%s' "$DASHBOARD_STATUS" ;;
+    *":8000/api/daemon/status"*) printf '%s\\n200' '{"state":"running","backend_status":{"ready":true,"motor_control_mode":"enabled"}}' ;;
+    *":8000/api/state/present_head_pose"*) printf '%s\\n200' '{"z":0}' ;;
+    *":8000/api/apps/current-app-status"*) printf '%s\\n200' '{"info":{"name":"reachy_openai_realtime"},"state":"running"}' ;;
+    *) exit 1 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    environment = os.environ | {
+        "DASHBOARD_STATUS": json.dumps(status),
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+    }
+
+    result = subprocess.run(
+        [str(READY_STATE.parent / "robot"), "-H", "test", "status"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+
+    assert result.returncode == 0
+    assert "realtime: connected phase=?" in result.stdout
+    if leaked_value is not None:
+        assert leaked_value not in result.stdout
