@@ -259,6 +259,9 @@ def test_always_on_noise_bail_does_not_construct_another_session(tmp_path, monke
         assert not stop_event.is_set(), "noise bail set the outer app stop"
         assert state["constructions"] == 1
         assert not second_session_constructed.wait(timeout=0.2), "noise bail created another session"
+        snapshot = app.runtime_status.snapshot()
+        assert snapshot["wake_latched"] is True
+        assert snapshot["wake_latch_reason"] == "noise_bail"
     finally:
         stop_event.set()
         thread.join(timeout=10.0)

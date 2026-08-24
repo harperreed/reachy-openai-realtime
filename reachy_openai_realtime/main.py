@@ -592,6 +592,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                                     break
                                 stop_event.wait(2.0)
                         elif outcome is SessionOutcome.NOISE_BAIL:
+                            self.runtime_status.set_wake_latch(True, "noise_bail")
                             self.runtime_status.set_phase(
                                 "safety_sleep",
                                 "Safety sleep is active; restart the app to rearm",

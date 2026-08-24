@@ -9,8 +9,10 @@ import pytest
 from reachy_openai_realtime.audio.fanout import AudioFrame, AudioSubscription
 from reachy_openai_realtime.presence.manager import PresenceManager, WakeAudioAssembler, _EitherStop
 from reachy_openai_realtime.presence.states import PresenceState, PresenceStateMachine
+from reachy_openai_realtime.session.recovery import SessionOutcome
 from reachy_openai_realtime.wakeword.base import WakeWordDetection
 from reachy_openai_realtime.wakeword.buffer import AudioRingBuffer
+from reachy_openai_realtime.wakeword.worker import WakeEvent
 
 
 def test_starts_booting_and_boots_to_sleeping():
@@ -163,6 +165,7 @@ class FakeStatus:
     def __init__(self):
         self.events = []
         self.errors = []
+        self.wake_latches: list[tuple[bool, str | None]] = []
 
     def record_event(self, event, **fields):
         self.events.append((event, fields))
@@ -170,34 +173,43 @@ class FakeStatus:
     def record_error(self, error):
         self.errors.append(error)
 
+    def set_wake_latch(self, latched: bool, reason: str | None) -> None:
+        self.wake_latches.append((latched, reason))
+
 
 class FakeSession:
-    def __init__(self, *, pending_wake_audio=None, on_session_ready=None):
+    def __init__(self, *, pending_wake_audio=None, on_session_ready=None, outcome=SessionOutcome.STOPPED):
         self.pending_wake_audio = pending_wake_audio
         self._on_session_ready = on_session_ready
+        self.outcome = outcome
         self.ran = False
 
     async def run(self, stop_event):
         self.ran = True
         if self._on_session_ready is not None:
             self._on_session_ready()
+        if self.outcome is SessionOutcome.NOISE_BAIL:
+            return self.outcome
         while not stop_event.is_set():
             await asyncio.sleep(0.01)
-        return "STOPPED"
+        return self.outcome
 
 
 class SessionRecorder:
     """A session_factory stand-in. connect=False withholds the ready callback
     so the connect deadline fires (the failed-connection path, spec §20)."""
 
-    def __init__(self, *, connect=True):
+    def __init__(self, *, connect=True, outcomes: list[SessionOutcome] | None = None):
         self.sessions = []
         self._connect = connect
+        self._outcomes = list(outcomes or [])
 
     def __call__(self, *, pending_wake_audio=None, on_session_ready=None):
+        outcome = self._outcomes.pop(0) if self._outcomes else SessionOutcome.STOPPED
         session = FakeSession(
             pending_wake_audio=pending_wake_audio,
             on_session_ready=on_session_ready if self._connect else None,
+            outcome=outcome,
         )
         self.sessions.append(session)
         return session
@@ -290,6 +302,46 @@ def test_manual_wake_builds_session_without_preroll():
     assert ("wake.manual", {"action": "wake"}) in status.events  # spec §27
 
 
+def test_noise_bail_latches_wake_word_until_manual_wake() -> None:
+    capture = FakeCapture()
+    factory = SessionRecorder(
+        connect=True,
+        outcomes=[SessionOutcome.NOISE_BAIL, SessionOutcome.STOPPED],
+    )
+    status = FakeStatus()
+    manager = PresenceManager(
+        capture=capture,
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=factory,
+        status=status,
+    )
+
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: manager.snapshot()["wake_latched"] is True)
+        assert manager.snapshot()["wake_latch_reason"] == "noise_bail"
+        assert manager.state is PresenceState.SLEEPING
+
+        manager._on_wake(
+            WakeEvent(
+                id="ignored",
+                detected_at=time.monotonic(),
+                phrase="hey reachy",
+                score=0.99,
+            )
+        )
+        time.sleep(0.05)
+        assert len(factory.sessions) == 1
+        assert ("wake.ignored", {"reason": "noise_bail_latched"}) in status.events
+
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: len(factory.sessions) == 2)
+        assert manager.snapshot()["wake_latched"] is False
+        assert manager.snapshot()["wake_latch_reason"] is None
+
+
 def test_manual_sleep_ends_active_session():
     factory = SessionRecorder(connect=True)
     manager = PresenceManager(
@@ -307,6 +359,27 @@ def test_manual_sleep_ends_active_session():
         assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
 
     assert factory.sessions[0].ran is True
+
+
+def test_manual_sleep_leaves_wake_unlatched():
+    factory = SessionRecorder(connect=True)
+    status = FakeStatus()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=factory,
+        status=status,
+    )
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: manager.state is PresenceState.AWAKE)
+        assert manager.request_sleep()["ok"] is True
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.snapshot()["wake_latched"] is False
+
+    assert status.wake_latches == []
 
 
 def test_request_sleep_while_asleep_is_rejected():
@@ -359,3 +432,25 @@ def test_failed_connection_returns_to_sleeping_with_failure_motion():
 
     assert factory.sessions[0].ran is True
     assert manager.snapshot()["state"] == "sleeping"
+
+
+def test_failed_connection_leaves_wake_unlatched():
+    factory = SessionRecorder(connect=False)
+    status = FakeStatus()
+    motion = FakeMotion()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=motion,
+        session_factory=factory,
+        status=status,
+        connect_timeout_seconds=0.3,
+    )
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(lambda: "fail" in motion.calls)
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.snapshot()["wake_latched"] is False
+
+    assert status.wake_latches == []
