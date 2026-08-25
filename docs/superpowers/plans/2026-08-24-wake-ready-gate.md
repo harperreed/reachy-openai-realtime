@@ -301,7 +301,7 @@ git commit -m "feat: add tracked ready beep playback"
 - Produces: read-only `RealtimeRobotSession.startup_failure_stage: str | None` for presence-level failure logging.
 - Preserves: an already-awake socket reconnect does not replay the beep or close the session-wide input gate.
 
-- [ ] **Step 1: Write failing session contract tests**
+- [x] **Step 1: Write failing session contract tests**
 
 Create `tests/test_wake_ready_gate.py` with this complete starting content. It uses a real `SpeakerWorker`, `RuntimeStatus`, `SessionStateMachine`, `EnergyTurnDetector`, and `AudioSubscription`; the in-memory media sink captures PCM data without a mock framework:
 
@@ -626,7 +626,7 @@ session._input_ready_at = 0.0
 
 Remove the now-unused `AudioFrame` test import.
 
-- [ ] **Step 2: Run the session tests and verify RED**
+- [x] **Step 2: Run the session tests and verify RED**
 
 Run:
 
@@ -636,7 +636,7 @@ uv run pytest tests/test_wake_ready_gate.py tests/test_realtime_manual_turn.py -
 
 Expected: failures show that `wake_session`, `_wake_readiness_loop`, and the input gate do not exist, and the old greeting rule still depends on buffered audio.
 
-- [ ] **Step 3: Add explicit wake-session state and remove Realtime pre-roll consumption**
+- [x] **Step 3: Add explicit wake-session state and remove Realtime pre-roll consumption**
 
 In `RealtimeRobotSession.__init__`, replace `pending_wake_audio` with `wake_session: bool = False` and initialize:
 
@@ -681,7 +681,12 @@ def _should_send_greeting(self) -> bool:
     return not self._greeting_sent and not self._wake_session
 ```
 
-- [ ] **Step 4: Implement connection-scoped readiness without blocking socket consumption**
+Add `_close_input_gate()` to clear the cutoff and reset VAD. Call it from `run()`'s final cleanup,
+and recheck `stop_event` immediately after the record loop's blocking `pop()` so a post-stop frame
+cannot reach VAD or OpenAI. Do not call it from `reset_connection_state()` because an already-awake
+socket reconnect must keep the session-wide cutoff open.
+
+- [x] **Step 4: Implement connection-scoped readiness without blocking socket consumption**
 
 Import the Task 1 beep symbols and add:
 
@@ -707,17 +712,19 @@ async def _wake_readiness_loop(
         self._startup_failure_stage = "ready_beep_generation"
         stop_event.set()
         return
+    submission_started_at = time.monotonic()
     receipt = await asyncio.to_thread(
         self._speaker.submit_tracked,
         beep,
         READY_BEEP_DURATION_MS,
-        started_at,
+        submission_started_at,
         1.0,
     )
     if receipt is None:
         self._startup_failure_stage = "ready_beep_enqueue"
         stop_event.set()
         return
+    submitted_at = time.monotonic()
 
     while not receipt.done():
         if stop_event.is_set() or epoch != self.connection_epoch:
@@ -728,7 +735,7 @@ async def _wake_readiness_loop(
         stop_event.set()
         return
 
-    ready_at = started_at + (READY_BEEP_DURATION_MS / 1_000.0) + READY_BEEP_OUTPUT_GUARD_SECONDS
+    ready_at = submitted_at + (READY_BEEP_DURATION_MS / 1_000.0) + READY_BEEP_OUTPUT_GUARD_SECONDS
     await self._sleep_unless_stopped(stop_event, max(0.0, ready_at - time.monotonic()))
     if stop_event.is_set() or epoch != self.connection_epoch:
         return
@@ -844,7 +851,7 @@ if self._wake_session and not self.input_ready:
 
 Do not reset `_input_ready_at` in `reset_connection_state()`: once the wake session reaches `AWAKE`, that session-wide capture cutoff remains valid across the existing socket reconnect path.
 
-- [ ] **Step 5: Run focused session tests and verify GREEN**
+- [x] **Step 5: Run focused session tests and verify GREEN**
 
 Run:
 
@@ -854,7 +861,7 @@ uv run pytest tests/test_wake_ready_gate.py tests/test_realtime_manual_turn.py t
 
 Expected: all selected tests pass; wake startup stops after one failed epoch, while existing awake reconnect tests still pass.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 ```bash
 git status --short
