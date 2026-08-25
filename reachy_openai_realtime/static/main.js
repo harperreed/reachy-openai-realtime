@@ -199,7 +199,7 @@ function renderRuntime(status) {
   const knownPhase = [
     "starting", "waiting_key", "starting_audio", "tuning_audio", "connecting",
     "reconnecting", "listening", "user_speaking", "thinking", "responding",
-    "assistant_speaking", "disconnected", "error", "stopped",
+    "assistant_speaking", "sleeping", "disconnected", "error", "stopped",
   ].includes(status.phase) ? status.phase : "starting";
   document.getElementById("status-dot").className = `status-dot ${knownPhase}`;
   document.getElementById("status-title").textContent = t(`phase_${knownPhase}`);

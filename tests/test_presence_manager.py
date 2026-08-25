@@ -878,11 +878,25 @@ def test_session_finalization_and_manual_sleep_have_one_atomic_winner() -> None:
     session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
     session_thread.start()
     assert failure_started.wait(timeout=1.0)
-    sleep_result = manager.request_sleep()
+
+    sleep_results: list[dict[str, object]] = []
+    sleep_started = threading.Event()
+
+    def request_sleep() -> None:
+        sleep_started.set()
+        sleep_results.append(manager.request_sleep())
+
+    sleep_thread = threading.Thread(target=request_sleep, daemon=True)
+    sleep_thread.start()
+    assert sleep_started.wait(timeout=1.0)
     release_failure.set()
+    sleep_thread.join(timeout=1.0)
     session_thread.join(timeout=1.0)
 
+    assert not sleep_thread.is_alive()
     assert not session_thread.is_alive()
+    assert len(sleep_results) == 1
+    sleep_result = sleep_results[0]
     failure_count = sum(event == "wake.connection_failed" for event, _fields in status.events)
     assert not (sleep_result["ok"] is True and failure_count > 0)
     if sleep_result["ok"] is True:
@@ -977,6 +991,117 @@ def test_sleep_observer_commits_before_next_wake_transition() -> None:
     assert observer_order == [PresenceState.SLEEPING, PresenceState.WAKING]
     assert manager.state is PresenceState.WAKING
     assert runtime_status.snapshot()["presence"] == "waking"
+
+
+def test_old_session_effects_finish_before_next_wake_can_commit() -> None:
+    failure_started = threading.Event()
+    release_failure = threading.Event()
+    wake_probe_done = threading.Event()
+    wake_blocked = threading.Event()
+    wake_acquired = threading.Event()
+    effects: list[str] = []
+
+    class ProbeLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread().name == "wake-before-old-effects-finish":
+                if self._lock.acquire(blocking=False):
+                    wake_acquired.set()
+                else:
+                    wake_blocked.set()
+                    wake_probe_done.set()
+                    self._lock.acquire()
+                wake_probe_done.set()
+            else:
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            self._lock.release()
+
+    class BlockingFailureStatus(FakeStatus):
+        def record_event(self, event, **fields):
+            if event == "wake.connection_failed":
+                effects.append("failure_event")
+                failure_started.set()
+                assert release_failure.wait(timeout=1.0)
+            super().record_event(event, **fields)
+
+    class OrderedMotion(FakeMotion):
+        def sleeping_pose(self):
+            effects.append("sleep")
+            return super().sleeping_pose()
+
+        def wake_acknowledge(self):
+            effects.append("wake")
+            return super().wake_acknowledge()
+
+        def connection_failed_motion(self):
+            effects.append("failure_motion")
+            return super().connection_failed_motion()
+
+    def observe(old, new, reason) -> None:
+        if reason == "session_ended":
+            effects.append("sleep_transition")
+        elif reason == "manual_wake":
+            effects.append("wake_transition")
+
+    class FailedStartupSession:
+        startup_failure_stage = "connection"
+
+        async def run(self, stop_event):
+            return SessionOutcome.STOPPED
+
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=OrderedMotion(),
+        session_factory=lambda **_kwargs: FailedStartupSession(),
+        status=BlockingFailureStatus(),
+        on_transition=observe,
+    )
+    manager._lock = ProbeLock()
+    manager._app_stop = threading.Event()
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+    pending = manager._pending
+    assert pending is not None
+    effects.clear()
+
+    session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
+    session_thread.start()
+    assert failure_started.wait(timeout=1.0)
+
+    wake_results: list[dict[str, object]] = []
+    wake_thread = threading.Thread(
+        target=lambda: wake_results.append(manager.request_wake()),
+        name="wake-before-old-effects-finish",
+        daemon=True,
+    )
+    wake_thread.start()
+    assert wake_probe_done.wait(timeout=1.0)
+    try:
+        assert wake_blocked.is_set() is True
+        assert wake_acquired.is_set() is False
+    finally:
+        release_failure.set()
+        wake_thread.join(timeout=1.0)
+        session_thread.join(timeout=1.0)
+
+    assert not wake_thread.is_alive()
+    assert not session_thread.is_alive()
+    assert wake_results == [{"ok": True, "state": "waking"}]
+    assert effects == [
+        "failure_event",
+        "failure_motion",
+        "sleep_transition",
+        "sleep",
+        "wake_transition",
+        "wake",
+    ]
+    assert manager.state is PresenceState.WAKING
 
 
 def test_session_exception_leaves_wake_unlatched():

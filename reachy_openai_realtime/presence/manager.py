@@ -467,10 +467,8 @@ class PresenceManager:
                 if deadline_expired.is_set()
                 else getattr(session, "startup_failure_stage", None)
             )
-            app_stopping = self._app_stop.is_set()
             with self._lock:
-                if latched:
-                    self._wake_latch = (True, "noise_bail")
+                app_stopping = self._app_stop.is_set()
                 cancel_reason = pending.cancel_reason
                 state = self._states.state
                 startup_failed = (
@@ -478,32 +476,26 @@ class PresenceManager:
                     and not app_stopping
                     and cancel_reason != "manual_sleep"
                 )
+                if startup_failed:
+                    self._status.record_event(
+                        "wake.connection_failed",
+                        stage=failure_stage or "startup",
+                    )
+                    if self._wake_motion_enabled:
+                        self._motion.connection_failed_motion()
                 if state in (PresenceState.AWAKE, PresenceState.WAKING):
                     self._states.transition(
                         PresenceState.SLEEPING,
                         reason="session_ended",
                     )
+                if not app_stopping:
+                    self._motion.sleeping_pose()
+                if latched:
+                    self._wake_latch = (True, "noise_bail")
+                    self._status.set_wake_latch(True, "noise_bail")
+                    self._status.record_event(
+                        "presence.noise_bail_latched",
+                        reason="noise_bail",
+                    )
                 self._pending = None
                 self._session_stop = None
-            if latched:
-                self._status.set_wake_latch(True, "noise_bail")
-                self._status.record_event("presence.noise_bail_latched", reason="noise_bail")
-            self._finish_session(
-                app_stopping=app_stopping,
-                startup_failed=startup_failed,
-                failure_stage=failure_stage,
-            )
-
-    def _finish_session(
-        self,
-        *,
-        app_stopping: bool,
-        startup_failed: bool,
-        failure_stage: str | None,
-    ) -> None:
-        if startup_failed:
-            self._status.record_event("wake.connection_failed", stage=failure_stage or "startup")
-            if self._wake_motion_enabled:
-                self._motion.connection_failed_motion()
-        if not app_stopping:
-            self._motion.sleeping_pose()
