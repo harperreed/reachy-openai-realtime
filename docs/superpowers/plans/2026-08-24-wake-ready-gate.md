@@ -1251,11 +1251,12 @@ Expected: Ruff passes and at least the 429 baseline tests plus the new tests pas
 
 First review exact spec compliance against `2026-08-24-wake-ready-gate-design.md`. Then review code quality, races, stop behavior, privacy, and whether tests assert state/data flow rather than mock call lists. Fix every in-scope finding with a failing test first, rerun the targeted suite, and commit each reviewed fix with a conventional imperative message.
 
-Final code-review checkpoint: exact code SHA `9617ea8` passed the 144-test expanded integration
-slice, Ruff, and 470 repository tests with no warnings. It moves the gate-opening action inside
-the lifecycle-lock readiness decision and skips deadline-lock work after startup resolves. Independent
-spec and quality reviewers approved that SHA with no remaining findings. Physical night-robot
-acceptance is still pending.
+Final code-review checkpoint: exact code SHA `3a4054b` passed the 145-test expanded integration
+slice, Ruff, and 471 repository tests with no warnings. It moves the gate-opening action inside
+the lifecycle-lock readiness decision, skips deadline-lock work after startup resolves, and starts
+the full 160 ms tone plus 100 ms output guard after speaker-write acknowledgement. Independent spec
+and quality reviewers approved that SHA with no remaining findings. Physical night-robot acceptance
+is still pending.
 
 - [x] **Step 4: Push a branch and open a pull request**
 
