@@ -1231,7 +1231,7 @@ git commit -m "fix: route presence through wake ready gate"
 - Consumes: all Task 1–3 behavior.
 - Produces: a review-clean branch whose local evidence is ready for night-robot deployment.
 
-- [ ] **Step 1: Run the full wake and audio integration slice**
+- [x] **Step 1: Run the full wake and audio integration slice**
 
 ```bash
 uv run pytest tests/test_audio_playback.py tests/test_wake_ready_gate.py tests/test_presence_manager.py tests/test_realtime_manual_turn.py tests/test_realtime_reconnect.py tests/test_realtime_reset.py tests/test_app_loop.py tests/test_runtime_status.py -v
@@ -1239,7 +1239,7 @@ uv run pytest tests/test_audio_playback.py tests/test_wake_ready_gate.py tests/t
 
 Expected: all selected tests pass with no warnings or logged errors outside tests that capture and assert the expected speaker-write failure.
 
-- [ ] **Step 2: Run the canonical repository gate**
+- [x] **Step 2: Run the canonical repository gate**
 
 ```bash
 uv run ruff check . && uv run pytest
@@ -1247,9 +1247,13 @@ uv run ruff check . && uv run pytest
 
 Expected: Ruff passes and at least the 429 baseline tests plus the new tests pass with no new warnings.
 
-- [ ] **Step 3: Run two-stage subagent review and fresh-eyes review**
+- [x] **Step 3: Run two-stage subagent review and fresh-eyes review**
 
 First review exact spec compliance against `2026-08-24-wake-ready-gate-design.md`. Then review code quality, races, stop behavior, privacy, and whether tests assert state/data flow rather than mock call lists. Fix every in-scope finding with a failing test first, rerun the targeted suite, and commit each reviewed fix with a conventional imperative message.
+
+Final code-review checkpoint: exact SHA `704f1a4` passed the 142-test integration slice,
+Ruff, and 468 repository tests with no warnings. Independent spec and quality reviewers approved
+that SHA with no remaining findings. Physical night-robot acceptance is still pending.
 
 - [ ] **Step 4: Push a branch and open a pull request**
 
