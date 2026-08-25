@@ -59,18 +59,6 @@ def test_on_transition_callback_fires_with_from_to_reason():
     assert seen == [(PresenceState.BOOTING, PresenceState.SLEEPING, "boot")]
 
 
-def test_deferred_transition_changes_state_before_notifying_observer() -> None:
-    seen: list[tuple] = []
-    fsm = PresenceStateMachine(on_transition=lambda old, new, reason: seen.append((old, new, reason)))
-
-    notify = fsm.transition_deferred(PresenceState.SLEEPING, reason="boot")
-
-    assert fsm.state is PresenceState.SLEEPING
-    assert seen == []
-    notify()
-    assert seen == [(PresenceState.BOOTING, PresenceState.SLEEPING, "boot")]
-
-
 def test_error_recovers_via_waking():
     fsm = PresenceStateMachine()
     fsm.transition(PresenceState.SLEEPING, reason="boot")
@@ -903,6 +891,92 @@ def test_session_finalization_and_manual_sleep_have_one_atomic_winner() -> None:
         assert sleep_result == {"ok": False, "state": "sleeping", "reason": "not_awake"}
         assert failure_count == 1
         assert motion.calls.count("fail") == 1
+
+
+def test_sleep_observer_commits_before_next_wake_transition() -> None:
+    sleep_observer_started = threading.Event()
+    release_sleep_observer = threading.Event()
+    wake_probe_done = threading.Event()
+    wake_blocked = threading.Event()
+    wake_acquired = threading.Event()
+    observer_order: list[PresenceState] = []
+    runtime_status = RuntimeStatus()
+
+    class ProbeLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread().name == "wake-after-finalization":
+                if self._lock.acquire(blocking=False):
+                    wake_acquired.set()
+                else:
+                    wake_blocked.set()
+                    wake_probe_done.set()
+                    self._lock.acquire()
+                wake_probe_done.set()
+            else:
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            self._lock.release()
+
+    def observe(old, new, reason) -> None:
+        if new is PresenceState.SLEEPING and reason == "session_ended":
+            sleep_observer_started.set()
+            assert release_sleep_observer.wait(timeout=1.0)
+        observer_order.append(new)
+        runtime_status.set_presence(old, new, reason)
+
+    class FailedStartupSession:
+        startup_failure_stage = "connection"
+
+        async def run(self, stop_event):
+            return SessionOutcome.STOPPED
+
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=lambda **_kwargs: FailedStartupSession(),
+        status=FakeStatus(),
+        on_transition=observe,
+    )
+    manager._lock = ProbeLock()
+    manager._app_stop = threading.Event()
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+    pending = manager._pending
+    assert pending is not None
+    observer_order.clear()
+
+    session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
+    session_thread.start()
+    assert sleep_observer_started.wait(timeout=1.0)
+
+    wake_results: list[dict[str, object]] = []
+    wake_thread = threading.Thread(
+        target=lambda: wake_results.append(manager.request_wake()),
+        name="wake-after-finalization",
+        daemon=True,
+    )
+    wake_thread.start()
+    assert wake_probe_done.wait(timeout=1.0)
+    try:
+        assert wake_blocked.is_set() is True
+        assert wake_acquired.is_set() is False
+    finally:
+        release_sleep_observer.set()
+        wake_thread.join(timeout=1.0)
+        session_thread.join(timeout=1.0)
+
+    assert not wake_thread.is_alive()
+    assert not session_thread.is_alive()
+    assert wake_results == [{"ok": True, "state": "waking"}]
+    assert observer_order == [PresenceState.SLEEPING, PresenceState.WAKING]
+    assert manager.state is PresenceState.WAKING
+    assert runtime_status.snapshot()["presence"] == "waking"
 
 
 def test_session_exception_leaves_wake_unlatched():

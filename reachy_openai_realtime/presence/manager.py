@@ -468,7 +468,6 @@ class PresenceManager:
                 else getattr(session, "startup_failure_stage", None)
             )
             app_stopping = self._app_stop.is_set()
-            notify_sleep: Callable[[], None] | None = None
             with self._lock:
                 if latched:
                     self._wake_latch = (True, "noise_bail")
@@ -480,7 +479,7 @@ class PresenceManager:
                     and cancel_reason != "manual_sleep"
                 )
                 if state in (PresenceState.AWAKE, PresenceState.WAKING):
-                    notify_sleep = self._states.transition_deferred(
+                    self._states.transition(
                         PresenceState.SLEEPING,
                         reason="session_ended",
                     )
@@ -489,8 +488,6 @@ class PresenceManager:
             if latched:
                 self._status.set_wake_latch(True, "noise_bail")
                 self._status.record_event("presence.noise_bail_latched", reason="noise_bail")
-            if notify_sleep is not None:
-                notify_sleep()
             self._finish_session(
                 app_stopping=app_stopping,
                 startup_failed=startup_failed,
