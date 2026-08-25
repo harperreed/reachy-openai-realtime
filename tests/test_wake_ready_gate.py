@@ -24,6 +24,7 @@ from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState
 from reachy_openai_realtime.session.recovery import SessionOutcome
+from reachy_openai_realtime.vad import EnergyTurnDetector
 
 
 class GateMedia:
@@ -217,6 +218,62 @@ def test_frame_captured_before_gate_stays_discarded_after_gate_opens(monkeypatch
     assert session._vad.speech_active is False
 
 
+def test_frame_straddling_gate_is_discarded_before_vad_or_append(monkeypatch) -> None:
+    class CountingVad(EnergyTurnDetector):
+        def __init__(self) -> None:
+            super().__init__()
+            self.process_calls = 0
+
+        def process(self, *args, **kwargs):
+            self.process_calls += 1
+            return super().process(*args, **kwargs)
+
+    async def scenario() -> tuple[RealtimeRobotSession, CountingInputBuffer, CountingVad]:
+        session = make_gate_session(monkeypatch, GateMedia())
+        subscription = AudioSubscription("realtime")
+        session._audio = subscription
+        input_buffer = CountingInputBuffer()
+        session.connection = SimpleNamespace(
+            input_audio_buffer=input_buffer,
+            response=CountingResponse(),
+        )
+        cutoff = time.monotonic()
+        samples = np.full(320, 20_000, dtype=np.int16)
+        session._input_ready_at = cutoff
+        vad = CountingVad()
+        vad.begin_turn()
+        session._vad = vad
+        session.fsm.transition(SessionState.CONNECTING, reason="test")
+        session.fsm.transition(SessionState.INITIALIZING, reason="test")
+        session.fsm.transition(SessionState.LISTENING, reason="test")
+        stop_event = threading.Event()
+        task = asyncio.create_task(session._record_loop(stop_event))
+        subscription._offer(
+            AudioFrame(
+                samples=samples,
+                sample_rate=16_000,
+                captured_at=cutoff + 0.01,
+            )
+        )
+        deadline = time.monotonic() + 1.0
+        while (
+            session._discarded_wake_frames == 0
+            and input_buffer.appended == 0
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.01)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        return session, input_buffer, vad
+
+    session, input_buffer, vad = asyncio.run(scenario())
+
+    assert session._discarded_wake_frames == 1
+    assert input_buffer.appended == 0
+    assert vad.process_calls == 0
+    assert vad.speech_active is False
+
+
 def test_frame_returned_after_stop_closes_gate_without_processing(monkeypatch) -> None:
     session = make_gate_session(monkeypatch, GateMedia())
     input_buffer = CountingInputBuffer()
@@ -298,7 +355,8 @@ def test_real_capture_discards_pre_gate_pcm_and_accepts_post_gate_pcm_in_order(m
         while session._discarded_wake_frames < 1 and time.monotonic() < deadline:
             await asyncio.sleep(0.01)
 
-        session._input_ready_at = time.monotonic()
+        frame_seconds = 160 / 16_000
+        session._input_ready_at = time.monotonic() - (2 * frame_seconds)
         session._vad.begin_turn()
         media.feed(np.full(160, 0.1, dtype=np.float32))
         media.feed(np.full(160, 0.2, dtype=np.float32))

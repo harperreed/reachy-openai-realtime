@@ -532,6 +532,12 @@ class RealtimeRobotSession:
         self._input_ready_at = None
         self._vad.reset_turn()
 
+    def _stop_record_loop_if_requested(self, stop_event: Any) -> bool:
+        if not stop_event.is_set():
+            return False
+        self._close_input_gate()
+        return True
+
     async def _record_loop(self, stop_event: Any) -> None:
         source_rate = self.robot.media.get_input_audio_samplerate()
         microphone_ready = False
@@ -558,15 +564,15 @@ class RealtimeRobotSession:
                     doa_poller = self._doa_poller
         while not stop_event.is_set():
             frame = await asyncio.to_thread(self._audio.pop, 0.25)
-            if stop_event.is_set():
-                self._close_input_gate()
+            if self._stop_record_loop_if_requested(stop_event):
                 return
             if frame is None:
                 action = self._mic_ladder.next_action(self._capture.frame_age_seconds())
                 await self._run_mic_recovery(action)
                 continue
             ready_at = self._input_ready_at
-            if ready_at is None or frame.captured_at < ready_at:
+            frame_started_at = frame.captured_at - (len(frame.samples) / frame.sample_rate)
+            if ready_at is None or frame_started_at < ready_at:
                 self._discarded_wake_frames += 1
                 continue
             sample = frame.samples
@@ -718,11 +724,15 @@ class RealtimeRobotSession:
                     },
                 )
                 for buffered, _ in pre_roll:
+                    if self._stop_record_loop_if_requested(stop_event):
+                        return
                     await self._append_input_audio(buffered)
                     self.status.record_audio_sent()
                 pre_roll.clear()
                 pre_roll_ms = 0.0
             elif was_active:
+                if self._stop_record_loop_if_requested(stop_event):
+                    return
                 await self._append_input_audio(encoded)
                 self.status.record_audio_sent()
 
@@ -762,11 +772,15 @@ class RealtimeRobotSession:
                 # message is committed and response generation starts.
                 self._start_camera_capture()
                 await self._finish_camera_capture()
+                if self._stop_record_loop_if_requested(stop_event):
+                    return
                 self.watchdog.arm("input_append")
                 await self.connection.input_audio_buffer.commit()
                 self.watchdog.disarm("input_append")
                 self._speech_ended_at = time.monotonic()
                 self.status.record_audio_commit()
+                if self._stop_record_loop_if_requested(stop_event):
+                    return
                 self.watchdog.arm("response_create")
                 self.status.record_event("response.requested", reason="user_turn_committed")
                 await self.connection.response.create(

@@ -137,6 +137,20 @@ def test_wake_button_stays_enabled_for_sleeping_safety_latch() -> None:
     assert 'document.getElementById("wake-button").disabled = !(presence === "sleeping" || presence === "error");' in js
 
 
+def test_sleep_button_is_enabled_while_waking_or_awake() -> None:
+    js = (STATIC / "main.js").read_text(encoding="utf-8")
+    assert (
+        'document.getElementById("sleep-button").disabled = '
+        '!(presence === "waking" || presence === "awake");'
+    ) in js
+
+
+def test_sleeping_status_dot_does_not_pulse() -> None:
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    assert ".status-dot.sleeping" in css
+    assert ".status-dot.sleeping { background: #667383; box-shadow: none; animation: none; }" in css
+
+
 def test_i18n_has_english_wake_rows() -> None:
     js = (STATIC / "i18n.js").read_text(encoding="utf-8")
     assert 'presence_latched: ["Safety sleep · use Wake now"]' in js

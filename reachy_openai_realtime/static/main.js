@@ -255,9 +255,9 @@ function renderRuntime(status) {
       : t("wake_disabled");
   wakeState.classList.toggle("ready", presence === "awake");
   // Enable each control only from a state its endpoint accepts: request_wake
-  // takes SLEEPING or ERROR, request_sleep takes AWAKE (Task 14/§24).
+  // takes SLEEPING or ERROR, request_sleep takes WAKING or AWAKE.
   document.getElementById("wake-button").disabled = !(presence === "sleeping" || presence === "error");
-  document.getElementById("sleep-button").disabled = presence !== "awake";
+  document.getElementById("sleep-button").disabled = !(presence === "waking" || presence === "awake");
 
   const events = Array.isArray(status.events) ? status.events : [];
   document.getElementById("event-count").textContent = String(events.length);

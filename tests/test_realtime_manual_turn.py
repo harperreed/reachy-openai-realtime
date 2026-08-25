@@ -8,6 +8,7 @@ import numpy as np
 from conftest import drive_fsm
 
 from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
+from reachy_openai_realtime.audio.fanout import AudioFrame, AudioSubscription
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession, RecentIds
@@ -16,7 +17,7 @@ from reachy_openai_realtime.session.circuit_breaker import TurnRateCircuitBreake
 from reachy_openai_realtime.session.fsm import SessionState, SessionStateMachine
 from reachy_openai_realtime.session.watchdog import DeadlineWatchdog
 from reachy_openai_realtime.tool_executor import ToolExecutor
-from reachy_openai_realtime.vad import EnergyTurnDetector
+from reachy_openai_realtime.vad import EnergyTurnDetector, VadDecision
 
 
 class FakeStopEvent:
@@ -367,6 +368,116 @@ def test_record_loop_fifth_turn_stops_before_commit_or_response() -> None:
     assert session.connection.input_audio_buffer.committed == 0
     assert session.connection.response.created == 0
     assert session._noise_bailed is True
+
+
+def _single_frame_record_session(
+    stop_event: FakeStopEvent,
+    *,
+    frame_count: int = 1,
+) -> RealtimeRobotSession:
+    session = _manual_turn_session([], stop_event)
+    session._camera_enabled_callback = lambda: False
+    session._audio = AudioSubscription("realtime")
+    for _ in range(frame_count):
+        session._audio._offer(
+            AudioFrame(
+                samples=stereo_frame(-30.0),
+                sample_rate=16_000,
+                captured_at=time.monotonic(),
+            )
+        )
+    return session
+
+
+def test_record_loop_stop_before_append_sends_no_audio() -> None:
+    stop_event = FakeStopEvent()
+    session = _single_frame_record_session(stop_event)
+
+    class StopDuringVad(EnergyTurnDetector):
+        def process(self, *args, **kwargs):
+            decision = super().process(*args, **kwargs)
+            stop_event.set()
+            return decision
+
+    session._vad = StopDuringVad()
+    session._vad.begin_turn()
+
+    asyncio.run(session._record_loop(stop_event))
+
+    snapshot = session.status.snapshot()
+    assert session.connection.input_audio_buffer.appended == 0
+    assert session.connection.input_audio_buffer.committed == 0
+    assert session.connection.response.created == 0
+    assert snapshot["audio_chunks_sent"] == 0
+    assert snapshot["audio_commits"] == 0
+    assert snapshot["response_requests"] == 0
+    assert session.input_ready is False
+    assert session._vad.speech_active is False
+
+
+def test_record_loop_stop_after_append_prevents_commit_and_response() -> None:
+    stop_event = FakeStopEvent()
+    session = _single_frame_record_session(stop_event, frame_count=2)
+
+    class StartOnSecondFrameVad(EnergyTurnDetector):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def process(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return VadDecision()
+            return VadDecision(started=True, stopped=True, reason="silence")
+
+    class StopAfterAppendBuffer(FakeInputAudioBuffer):
+        async def append(self, *, audio: str) -> None:
+            await super().append(audio=audio)
+            stop_event.set()
+
+    session._vad = StartOnSecondFrameVad()
+    session.connection.input_audio_buffer = StopAfterAppendBuffer(stop_event)
+
+    asyncio.run(session._record_loop(stop_event))
+
+    snapshot = session.status.snapshot()
+    assert session.connection.input_audio_buffer.appended == 1
+    assert session.connection.input_audio_buffer.committed == 0
+    assert session.connection.response.created == 0
+    assert snapshot["audio_chunks_sent"] == 1
+    assert snapshot["audio_commits"] == 0
+    assert snapshot["response_requests"] == 0
+    assert session.input_ready is False
+    assert session._vad.speech_active is False
+
+
+def test_record_loop_stop_after_commit_prevents_response() -> None:
+    stop_event = FakeStopEvent()
+    session = _single_frame_record_session(stop_event)
+
+    class ImmediateTurnVad(EnergyTurnDetector):
+        def process(self, *args, **kwargs):
+            return VadDecision(started=True, stopped=True, reason="silence")
+
+    class StopAfterCommitBuffer(FakeInputAudioBuffer):
+        async def commit(self) -> None:
+            await super().commit()
+            stop_event.set()
+
+    session._vad = ImmediateTurnVad()
+    session.connection.input_audio_buffer = StopAfterCommitBuffer(stop_event)
+
+    asyncio.run(session._record_loop(stop_event))
+
+    snapshot = session.status.snapshot()
+    assert session.connection.input_audio_buffer.appended == 1
+    assert session.connection.input_audio_buffer.committed == 1
+    assert session.connection.response.created == 0
+    assert snapshot["audio_chunks_sent"] == 1
+    assert snapshot["audio_commits"] == 1
+    assert snapshot["response_requests"] == 0
+    assert session.input_ready is False
+    assert session._vad.speech_active is False
 
 
 def test_camera_image_uses_data_uri_and_replaces_previous_image() -> None:

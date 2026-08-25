@@ -56,6 +56,7 @@ h1 { margin: 0; font-size: clamp(30px, 8vw, 42px); overflow-wrap: anywhere; }
   animation: pulse 1.6s ease-in-out infinite;
 }
 .status-dot.listening { background: #45d483; box-shadow: 0 0 16px #45d48366; animation: none; }
+.status-dot.sleeping { background: #667383; box-shadow: none; animation: none; }
 .status-dot.user_speaking { background: #39bdf8; box-shadow: 0 0 16px #39bdf888; }
 .status-dot.responding, .status-dot.thinking, .status-dot.assistant_speaking { background: #b28cff; box-shadow: 0 0 16px #b28cff88; }
 .status-dot.error, .status-dot.disconnected, .status-dot.stopped { background: #ff6975; box-shadow: 0 0 16px #ff697566; animation: none; }

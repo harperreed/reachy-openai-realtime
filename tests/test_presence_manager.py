@@ -748,6 +748,7 @@ def test_ready_callback_cannot_publish_awake_after_manual_cancel_starts() -> Non
     release_ready = threading.Event()
     acceptance_started = threading.Event()
     ready_returned = threading.Event()
+    status = FakeStatus()
 
     class BlockingStopEvent:
         def __init__(self) -> None:
@@ -789,7 +790,7 @@ def test_ready_callback_cannot_publish_awake_after_manual_cancel_starts() -> Non
             accept_session_ready=kwargs["accept_session_ready"],
             on_session_ready=kwargs["on_session_ready"]
         ),
-        status=FakeStatus(),
+        status=status,
     )
     manager._app_stop = threading.Event()
     manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
@@ -819,6 +820,12 @@ def test_ready_callback_cannot_publish_awake_after_manual_cancel_starts() -> Non
     session_thread.join(timeout=1.0)
     assert not sleep_thread.is_alive()
     assert not session_thread.is_alive()
+    assert manager.state is PresenceState.SLEEPING
+    assert not any(
+        event == "presence.transition" and fields.get("to_state") == "awake"
+        for event, fields in status.events
+    )
+    assert not any(event == "wake.session_ready" for event, _fields in status.events)
 
 
 def test_ready_callback_rejects_app_stop_after_session_last_check() -> None:

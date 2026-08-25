@@ -10,6 +10,7 @@ from reachy_mini.utils import create_head_pose
 
 from reachy_openai_realtime.audio.capture import AudioPipelineStalled
 from reachy_openai_realtime.main import ReachyOpenaiRealtime
+from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.session.recovery import SessionOutcome
 from reachy_openai_realtime.session.supervisor import RestartBudget
 
@@ -380,16 +381,6 @@ def test_app_loop_wake_enabled_runs_presence_manager(tmp_path, monkeypatch) -> N
 
     stop_event = threading.Event()
     built: dict[str, Any] = {}
-    realtime_kwargs: dict[str, Any] = {}
-
-    class StubRealtimeSession:
-        def __init__(self, *_args: Any, **kwargs: Any) -> None:
-            realtime_kwargs.update(kwargs)
-
-    monkeypatch.setattr(
-        "reachy_openai_realtime.main.RealtimeRobotSession",
-        StubRealtimeSession,
-    )
 
     class StubPresence:
         def __init__(self, **kwargs: Any) -> None:
@@ -422,12 +413,13 @@ def test_app_loop_wake_enabled_runs_presence_manager(tmp_path, monkeypatch) -> N
     assert built["kwargs"]["capture"] is not None
     accept_session_ready = lambda: True
     on_session_ready = lambda: None
-    built["kwargs"]["session_factory"](
+    session = built["kwargs"]["session_factory"](
         wake_session=True,
         accept_session_ready=accept_session_ready,
         on_session_ready=on_session_ready,
     )
-    assert realtime_kwargs["wake_session"] is True
-    assert realtime_kwargs["accept_session_ready"] is accept_session_ready
-    assert realtime_kwargs["on_session_ready"] is on_session_ready
+    assert isinstance(session, RealtimeRobotSession)
+    assert session._wake_session is True
+    assert session._accept_session_ready is accept_session_ready
+    assert session._on_session_ready is on_session_ready
     assert app._presence is None  # cleared in the run() finally
