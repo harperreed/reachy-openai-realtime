@@ -192,12 +192,15 @@ def test_snapshot_includes_cumulative_response_usage() -> None:
     assert snapshot["events"][0]["key"] == "event_usage_recorded"
 
 
-def test_set_presence_updates_snapshot():
+def test_waking_presence_reports_connecting_without_claiming_connection() -> None:
     from reachy_openai_realtime.presence.states import PresenceState
 
     status = RuntimeStatus()
     status.set_presence(PresenceState.SLEEPING, PresenceState.WAKING, "wake_word")
-    assert status.snapshot()["presence"] == "waking"
+    snapshot = status.snapshot()
+    assert snapshot["presence"] == "waking"
+    assert snapshot["phase"] == "connecting"
+    assert snapshot["connected"] is False
 
 
 def test_sleeping_presence_clears_stale_connected_status():

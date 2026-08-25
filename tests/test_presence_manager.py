@@ -179,8 +179,10 @@ class FakeStatus:
 
 
 class FakeSession:
-    def __init__(self, *, pending_wake_audio=None, on_session_ready=None, outcome=SessionOutcome.STOPPED):
-        self.pending_wake_audio = pending_wake_audio
+    startup_failure_stage: str | None = None
+
+    def __init__(self, *, wake_session=False, on_session_ready=None, outcome=SessionOutcome.STOPPED):
+        self.wake_session = wake_session
         self._on_session_ready = on_session_ready
         self.outcome = outcome
         self.ran = False
@@ -205,10 +207,10 @@ class SessionRecorder:
         self._connect = connect
         self._outcomes = list(outcomes or [])
 
-    def __call__(self, *, pending_wake_audio=None, on_session_ready=None):
+    def __call__(self, *, wake_session=False, on_session_ready=None):
         outcome = self._outcomes.pop(0) if self._outcomes else SessionOutcome.STOPPED
         session = FakeSession(
-            pending_wake_audio=pending_wake_audio,
+            wake_session=wake_session,
             on_session_ready=on_session_ready if self._connect else None,
             outcome=outcome,
         )
@@ -217,8 +219,10 @@ class SessionRecorder:
 
 
 class GatedNoiseBailSession:
-    def __init__(self, *, pending_wake_audio=None, on_session_ready=None, return_gate=None):
-        self.pending_wake_audio = pending_wake_audio
+    startup_failure_stage: str | None = None
+
+    def __init__(self, *, wake_session=False, on_session_ready=None, return_gate=None):
+        self.wake_session = wake_session
         self._on_session_ready = on_session_ready
         self._return_gate = return_gate
 
@@ -297,7 +301,7 @@ def test_boot_reaches_sleeping_and_plays_boot_then_sleep_pose():
     assert motion.calls[:2] == ["boot", "sleep"]
 
 
-def test_wake_word_reaches_awake_and_seeds_session_with_preroll():
+def test_wake_word_builds_ready_gated_session_without_preroll() -> None:
     capture = FakeCapture()
     motion = FakeMotion()
     factory = SessionRecorder(connect=True)
@@ -319,7 +323,8 @@ def test_wake_word_reaches_awake_and_seeds_session_with_preroll():
 
     assert "wake" in motion.calls
     assert len(factory.sessions) == 1
-    assert factory.sessions[0].pending_wake_audio  # non-empty raw pre-roll
+    assert factory.sessions[0].wake_session is True
+    assert not hasattr(factory.sessions[0], "pending_wake_audio")
     kinds = [event for event, _ in status.events]
     assert "wake.detected" in kinds  # spec §27 structured logging
     assert "wake.session_ready" in kinds
@@ -341,7 +346,8 @@ def test_manual_wake_builds_session_without_preroll():
         assert _wait_until(lambda: manager.state is PresenceState.AWAKE)
 
     assert len(factory.sessions) == 1
-    assert factory.sessions[0].pending_wake_audio is None
+    assert factory.sessions[0].wake_session is True
+    assert not hasattr(factory.sessions[0], "pending_wake_audio")
     assert ("wake.manual", {"action": "wake"}) in status.events  # spec §27
 
 
@@ -391,9 +397,9 @@ def test_manual_rearm_cannot_publish_stale_clear_after_second_noise_bail() -> No
     status = RearmOrderingStatus()
     sessions: list[GatedNoiseBailSession] = []
 
-    def session_factory(*, pending_wake_audio=None, on_session_ready=None):
+    def session_factory(*, wake_session=False, on_session_ready=None):
         session = GatedNoiseBailSession(
-            pending_wake_audio=pending_wake_audio,
+            wake_session=wake_session,
             on_session_ready=on_session_ready,
             return_gate=second_bail_gate if sessions else None,
         )
@@ -602,6 +608,135 @@ def test_failed_connection_leaves_wake_unlatched():
         assert manager.snapshot()["wake_latched"] is False
 
     assert status.wake_latches == []
+
+
+def test_ready_beep_failure_stage_is_recorded() -> None:
+    class FailedReadyBeepSession:
+        startup_failure_stage = "ready_beep_write"
+
+        async def run(self, stop_event):
+            return SessionOutcome.STOPPED
+
+    status = FakeStatus()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=lambda **_kwargs: FailedReadyBeepSession(),
+        status=status,
+    )
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert _wait_until(
+            lambda: (
+                "wake.connection_failed",
+                {"stage": "ready_beep_write"},
+            )
+            in status.events
+        )
+
+
+def test_manual_sleep_cancels_session_while_waking() -> None:
+    started = threading.Event()
+
+    class WakingSession:
+        startup_failure_stage = None
+
+        async def run(self, stop_event):
+            started.set()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.01)
+            return SessionOutcome.STOPPED
+
+    status = FakeStatus()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=lambda **_kwargs: WakingSession(),
+        status=status,
+    )
+    with _running(manager):
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+        assert manager.request_wake()["ok"] is True
+        assert started.wait(timeout=1.0)
+        assert manager.state is PresenceState.WAKING
+        assert manager.request_sleep()["ok"] is True
+        assert _wait_until(lambda: manager.state is PresenceState.SLEEPING)
+    assert not any(event == "wake.connection_failed" for event, _fields in status.events)
+
+
+def test_ready_callback_cannot_publish_awake_after_manual_cancel_starts() -> None:
+    started = threading.Event()
+    release_ready = threading.Event()
+    ready_returned = threading.Event()
+
+    class BlockingStopEvent:
+        def __init__(self) -> None:
+            self._event = threading.Event()
+            self.set_started = threading.Event()
+            self.allow_set = threading.Event()
+
+        def is_set(self) -> bool:
+            return self._event.is_set()
+
+        def set(self) -> None:
+            self.set_started.set()
+            assert self.allow_set.wait(timeout=1.0)
+            self._event.set()
+
+    class LateReadySession:
+        startup_failure_stage = None
+
+        def __init__(self, *, on_session_ready) -> None:
+            self._on_session_ready = on_session_ready
+
+        async def run(self, stop_event):
+            started.set()
+            await asyncio.to_thread(release_ready.wait)
+            self._on_session_ready()
+            ready_returned.set()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.01)
+            return SessionOutcome.STOPPED
+
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=lambda **kwargs: LateReadySession(
+            on_session_ready=kwargs["on_session_ready"]
+        ),
+        status=FakeStatus(),
+    )
+    manager._app_stop = threading.Event()
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+
+    with manager._lock:
+        pending = manager._pending
+        assert pending is not None
+        stop_event = BlockingStopEvent()
+        pending.stop_event = stop_event
+        manager._session_stop = stop_event
+
+    session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
+    session_thread.start()
+    assert started.wait(timeout=1.0)
+
+    sleep_thread = threading.Thread(target=manager.request_sleep, daemon=True)
+    sleep_thread.start()
+    assert stop_event.set_started.wait(timeout=1.0)
+    release_ready.set()
+    assert ready_returned.wait(timeout=1.0)
+    assert manager.state is PresenceState.WAKING
+
+    stop_event.allow_set.set()
+    sleep_thread.join(timeout=1.0)
+    session_thread.join(timeout=1.0)
+    assert not sleep_thread.is_alive()
+    assert not session_thread.is_alive()
 
 
 def test_session_exception_leaves_wake_unlatched():
