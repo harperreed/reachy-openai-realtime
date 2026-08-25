@@ -740,6 +740,51 @@ def test_ready_beep_guard_starts_after_slow_generation(monkeypatch) -> None:
     assert abs(requested_sleeps[0] - expected_guard) < 1e-9
 
 
+def test_ready_beep_output_wait_starts_after_speaker_write_ack(monkeypatch) -> None:
+    clock = SimpleNamespace(now=10.0)
+    write_completed_at = 10.5
+    requested_sleeps: list[float] = []
+
+    class DelayedWriteReceipt:
+        def done(self) -> bool:
+            clock.now = write_completed_at
+            return True
+
+        def succeeded(self) -> bool:
+            return True
+
+    class DelayedWriteSpeaker:
+        def submit_tracked(self, *_args, **_kwargs) -> DelayedWriteReceipt:
+            return DelayedWriteReceipt()
+
+    session = make_gate_session(monkeypatch, GateMedia())
+    session.connection_epoch = 1
+    session.fsm.transition(SessionState.CONNECTING, reason="test")
+    session.fsm.transition(SessionState.INITIALIZING, reason="test")
+    session._speaker = DelayedWriteSpeaker()  # type: ignore[assignment]
+
+    async def record_sleep(stop_event: threading.Event, seconds: float) -> None:
+        requested_sleeps.append(seconds)
+        clock.now += seconds
+
+    monkeypatch.setattr(realtime_mod, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    session._sleep_unless_stopped = record_sleep  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        configured = asyncio.Event()
+        configured.set()
+        await session._wake_readiness_loop(threading.Event(), configured, 1)
+
+    asyncio.run(scenario())
+
+    expected_output_wait = (
+        realtime_mod.READY_BEEP_DURATION_MS / 1_000.0
+        + realtime_mod.READY_BEEP_OUTPUT_GUARD_SECONDS
+    )
+    assert requested_sleeps == pytest.approx([expected_output_wait])
+    assert session._input_ready_at == pytest.approx(write_completed_at + expected_output_wait)
+
+
 def test_session_updated_keeps_consuming_events_while_ready_beep_is_blocked(monkeypatch) -> None:
     media = BlockingGateMedia()
     session = make_gate_session(monkeypatch, media)

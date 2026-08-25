@@ -1027,7 +1027,6 @@ class RealtimeRobotSession:
             self._startup_failure_stage = "ready_beep_enqueue"
             stop_event.set()
             return
-        submitted_at = time.monotonic()
 
         while not receipt.done():
             if stop_event.is_set() or epoch != self.connection_epoch:
@@ -1038,7 +1037,12 @@ class RealtimeRobotSession:
             stop_event.set()
             return
 
-        ready_at = submitted_at + (READY_BEEP_DURATION_MS / 1_000.0) + READY_BEEP_OUTPUT_GUARD_SECONDS
+        write_acknowledged_at = time.monotonic()
+        ready_at = (
+            write_acknowledged_at
+            + (READY_BEEP_DURATION_MS / 1_000.0)
+            + READY_BEEP_OUTPUT_GUARD_SECONDS
+        )
         await self._sleep_unless_stopped(stop_event, max(0.0, ready_at - time.monotonic()))
         if stop_event.is_set() or epoch != self.connection_epoch:
             return
