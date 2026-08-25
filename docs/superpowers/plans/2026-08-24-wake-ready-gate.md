@@ -1255,7 +1255,7 @@ Final code-review checkpoint: exact SHA `704f1a4` passed the 142-test integratio
 Ruff, and 468 repository tests with no warnings. Independent spec and quality reviewers approved
 that SHA with no remaining findings. Physical night-robot acceptance is still pending.
 
-- [ ] **Step 4: Push a branch and open a pull request**
+- [x] **Step 4: Push a branch and open a pull request**
 
 ```bash
 git push -u origin fix/wake-ready-gate
@@ -1264,6 +1264,9 @@ gh pr create --draft --title "fix: gate wake input until ready beep" \
 ```
 
 Prepare the PR body in a temporary file outside the repository. Include the incident, root cause, behavior change, local test counts, privacy boundary, known physical-playback estimate, and Kata issue `9n71`. Convert from draft only after review findings are resolved and the canonical gate is rerun.
+
+Opened [PR #27](https://github.com/harperreed/reachy-openai-realtime/pull/27) after both
+reviewers approved the final code and the canonical gate passed.
 
 - [ ] **Step 5: Run night-robot end-to-end acceptance after deploy approval**
 
