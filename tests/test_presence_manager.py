@@ -739,6 +739,110 @@ def test_ready_callback_cannot_publish_awake_after_manual_cancel_starts() -> Non
     assert not session_thread.is_alive()
 
 
+def test_ready_callback_rejects_app_stop_after_session_last_check() -> None:
+    started = threading.Event()
+    release_ready = threading.Event()
+
+    class AppStoppingSession:
+        startup_failure_stage = None
+
+        def __init__(self, *, on_session_ready) -> None:
+            self._on_session_ready = on_session_ready
+
+        async def run(self, stop_event):
+            assert stop_event.is_set() is False
+            started.set()
+            await asyncio.to_thread(release_ready.wait)
+            self._on_session_ready()
+            return SessionOutcome.STOPPED
+
+    status = FakeStatus()
+    motion = FakeMotion()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=motion,
+        session_factory=lambda **kwargs: AppStoppingSession(
+            on_session_ready=kwargs["on_session_ready"]
+        ),
+        status=status,
+    )
+    app_stop = threading.Event()
+    manager._app_stop = app_stop
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+    pending = manager._pending
+    assert pending is not None
+
+    session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
+    session_thread.start()
+    assert started.wait(timeout=1.0)
+    app_stop.set()
+    release_ready.set()
+    session_thread.join(timeout=1.0)
+
+    assert not session_thread.is_alive()
+    assert manager.state is PresenceState.SLEEPING
+    assert not any(event == "wake.session_ready" for event, _fields in status.events)
+    assert not any(
+        event == "presence.transition" and fields.get("to_state") == "awake"
+        for event, fields in status.events
+    )
+    assert not any(event == "wake.connection_failed" for event, _fields in status.events)
+    assert "fail" not in motion.calls
+
+
+def test_deadline_wins_when_ready_callback_arrives_at_deadline() -> None:
+    now = [100.0]
+    callback_poised = threading.Event()
+    release_ready = threading.Event()
+
+    class DeadlineReadySession:
+        startup_failure_stage = None
+
+        def __init__(self, *, on_session_ready) -> None:
+            self._on_session_ready = on_session_ready
+
+        async def run(self, stop_event):
+            assert stop_event.is_set() is False
+            callback_poised.set()
+            await asyncio.to_thread(release_ready.wait)
+            self._on_session_ready()
+            return SessionOutcome.STOPPED
+
+    status = FakeStatus()
+    motion = FakeMotion()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=motion,
+        session_factory=lambda **kwargs: DeadlineReadySession(
+            on_session_ready=kwargs["on_session_ready"]
+        ),
+        status=status,
+        connect_timeout_seconds=10.0,
+        clock=lambda: now[0],
+    )
+    manager._app_stop = threading.Event()
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+    pending = manager._pending
+    assert pending is not None
+
+    session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
+    session_thread.start()
+    assert callback_poised.wait(timeout=1.0)
+    now[0] = 110.0
+    release_ready.set()
+    session_thread.join(timeout=1.0)
+
+    assert not session_thread.is_alive()
+    assert manager.state is PresenceState.SLEEPING
+    assert not any(event == "wake.session_ready" for event, _fields in status.events)
+    assert status.events.count(("wake.connection_failed", {"stage": "deadline"})) == 1
+    assert motion.calls.count("fail") == 1
+
+
 def test_session_exception_leaves_wake_unlatched():
     class RaisingSession:
         async def run(self, stop_event):

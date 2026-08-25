@@ -341,29 +341,53 @@ class PresenceManager:
 
     def _run_session(self, pending: _PendingWake) -> None:
         session_stop = pending.stop_event
-        ready = threading.Event()
+        startup_resolved = threading.Event()
+        deadline_expired = threading.Event()
+        deadline_at = self._clock() + self._connect_timeout_seconds
 
         def _on_session_ready() -> None:
-            ready.set()
+            accepted = False
+            deadline_won = False
             with self._lock:
-                if session_stop.is_set() or pending.cancel_reason == "manual_sleep":
+                if startup_resolved.is_set():
                     return
-                # Idempotent if session.updated re-fires; WAKING→AWAKE is the only
-                # legal edge here (a manual sleep may already have cancelled startup).
-                if self._states.state is PresenceState.WAKING:
+                if (
+                    session_stop.is_set()
+                    or self._app_stop.is_set()
+                    or pending.cancel_reason == "manual_sleep"
+                ):
+                    startup_resolved.set()
+                elif self._clock() >= deadline_at:
+                    deadline_expired.set()
+                    startup_resolved.set()
+                    deadline_won = True
+                elif self._states.state is PresenceState.WAKING:
+                    startup_resolved.set()
                     self._states.transition(PresenceState.AWAKE, reason="session_ready")
-                    self._status.record_event("wake.session_ready")
+                    accepted = True
+                else:
+                    startup_resolved.set()
+            if deadline_won:
+                session_stop.set()
+            elif accepted:
+                self._status.record_event("wake.session_ready")
 
         session = self._session_factory(
             wake_session=True,
             on_session_ready=_on_session_ready,
         )
 
-        deadline_expired = threading.Event()
-
         def _watch_deadline() -> None:
-            if not ready.wait(self._connect_timeout_seconds):
-                deadline_expired.set()
+            remaining = max(0.0, deadline_at - self._clock())
+            if startup_resolved.wait(remaining):
+                return
+            deadline_won = False
+            with self._lock:
+                if not startup_resolved.is_set():
+                    startup_resolved.set()
+                    deadline_won = True
+                    deadline_expired.set()
+            if deadline_won:
                 session_stop.set()
 
         watchdog = threading.Thread(target=_watch_deadline, name="wake-connect-deadline", daemon=True)
@@ -378,6 +402,15 @@ class PresenceManager:
             logger.exception("wake session crashed")
             self._status.record_error(f"wake session crashed: {error}")
         finally:
+            with self._lock:
+                if not startup_resolved.is_set():
+                    if (
+                        not self._app_stop.is_set()
+                        and pending.cancel_reason != "manual_sleep"
+                        and self._clock() >= deadline_at
+                    ):
+                        deadline_expired.set()
+                    startup_resolved.set()
             session_stop.set()
             watchdog.join(timeout=1.0)
             latched = outcome is SessionOutcome.NOISE_BAIL
