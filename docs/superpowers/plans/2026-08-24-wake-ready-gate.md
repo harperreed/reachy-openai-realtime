@@ -885,7 +885,7 @@ git commit -m "fix: gate wake input until ready beep"
 - Produces: presence session factories accept `wake_session: bool` and `on_session_ready` only; they never receive pre-roll.
 - Preserves: `_PendingWake` and `WakeAudioAssembler` remain memory-only so current wake settings stay valid.
 
-- [ ] **Step 1: Write failing presence and status tests**
+- [x] **Step 1: Write failing presence and status tests**
 
 Replace the session test doubles in `tests/test_presence_manager.py` with the explicit factory contract:
 
@@ -1059,7 +1059,7 @@ def test_waking_presence_reports_connecting_without_claiming_connection() -> Non
     assert snapshot["connected"] is False
 ```
 
-- [ ] **Step 2: Run presence/status tests and verify RED**
+- [x] **Step 2: Run presence/status tests and verify RED**
 
 Run:
 
@@ -1069,7 +1069,7 @@ uv run pytest tests/test_presence_manager.py tests/test_runtime_status.py -v
 
 Expected: session factories reject `wake_session`, the manager still passes pre-roll, failure events lack `stage`, and WAKING does not set the connecting phase.
 
-- [ ] **Step 3: Change the presence session contract**
+- [x] **Step 3: Change the presence session contract**
 
 Add `stop_event: threading.Event` and `cancel_reason: str | None = None` to `_PendingWake`. Whenever `_on_wake()` or either manual-wake branch creates a pending wake, create the stop event at the same time and publish it under the lifecycle lock:
 
@@ -1150,7 +1150,13 @@ if state is PresenceState.WAKING and not app_stopping and cancel_reason != "manu
 
 Update the manual-wake docstring: it starts a ready-gated session with no pre-roll and no model greeting.
 
-- [ ] **Step 4: Wire production and connecting status**
+Use a deadline-aware combined stop signal for wake startup so the session's final pre-gate
+`is_set()` check makes the 10-second deadline authoritative before input opens. Serialize callback,
+deadline, manual cancel, app stop, session completion effects, the SLEEPING observer, latch
+publication, and lifecycle ownership so one startup outcome wins and a new wake cannot overtake
+the old attempt's failure or sleeping motion.
+
+- [x] **Step 4: Wire production and connecting status**
 
 Change the wake-enabled factory in `main.py` to:
 
@@ -1184,10 +1190,17 @@ if state_name == "waking":
     self._detail_params = {}
     self._connected = False
 elif state_name == "sleeping":
+    self._phase = "sleeping"
+    self._detail = "Asleep · say “hey reachy”"
+    self._detail_key = "presence_sleeping"
+    self._detail_params = {}
     self._connected = False
 ```
 
-- [ ] **Step 5: Run presence and cross-path tests and verify GREEN**
+Add `sleeping` to the dashboard's known phases and provide `phase_sleeping` in every supported
+locale so the sleeping backend phase does not render as `Starting`.
+
+- [x] **Step 5: Run presence and cross-path tests and verify GREEN**
 
 Run:
 
@@ -1197,7 +1210,7 @@ uv run pytest tests/test_presence_manager.py tests/test_runtime_status.py tests/
 
 Expected: all selected tests pass; both wake sources use `wake_session=True`, wake-disabled behavior remains green, and startup failures carry a stage.
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```bash
 git status --short
