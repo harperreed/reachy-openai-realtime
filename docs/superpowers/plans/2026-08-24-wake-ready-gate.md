@@ -58,7 +58,7 @@
 - Produces: `SpeakerWorker.submit_tracked(pcm, duration_ms, received_at, timeout_seconds) -> SpeakerWriteReceipt | None`.
 - Preserves: `SpeakerWorker.submit(pcm: np.ndarray, duration_ms: float, received_at: float, timeout_seconds: float) -> bool` for normal response playback.
 
-- [ ] **Step 1: Write failing tone and receipt tests**
+- [x] **Step 1: Write failing tone and receipt tests**
 
 Add imports and these tests to `tests/test_audio_playback.py`:
 
@@ -152,7 +152,7 @@ def test_flush_fails_a_queued_tracked_write() -> None:
     assert receipt.succeeded() is False
 ```
 
-- [ ] **Step 2: Run the new tests and verify RED**
+- [x] **Step 2: Run the new tests and verify RED**
 
 Run:
 
@@ -162,7 +162,7 @@ uv run pytest tests/test_audio_playback.py -k 'ready_beep or tracked_speaker or 
 
 Expected: collection fails because the new constants, function, and receipt API do not exist.
 
-- [ ] **Step 3: Implement the tone and one shared queue-item path**
+- [x] **Step 3: Implement the tone and one shared queue-item path**
 
 Add these definitions near the playback constants in `reachy_openai_realtime/audio/playback.py`:
 
@@ -267,7 +267,7 @@ def _run(self) -> None:
                 logger.exception("on_write callback failed")
 ```
 
-- [ ] **Step 4: Run the playback tests and verify GREEN**
+- [x] **Step 4: Run the playback tests and verify GREEN**
 
 Run:
 
@@ -277,7 +277,7 @@ uv run pytest tests/test_audio_playback.py -v
 
 Expected: all playback tests pass with the four new cases.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
 git status --short
