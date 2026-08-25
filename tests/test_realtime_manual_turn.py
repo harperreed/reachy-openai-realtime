@@ -8,7 +8,6 @@ import numpy as np
 from conftest import drive_fsm
 
 from reachy_openai_realtime.audio.capture import AudioRecoveryLadder, CaptureWorker
-from reachy_openai_realtime.audio.fanout import AudioFrame
 from reachy_openai_realtime.audio.playback import PlaybackBuffer, SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import DoAPoller, RealtimeRobotSession, RecentIds
@@ -237,8 +236,8 @@ def _manual_turn_session(frames: list[np.ndarray], stop_event: FakeStopEvent) ->
     session.watchdog = DeadlineWatchdog()
     session._doa_poller = None
     session._connected_at = None
-    session._pending_wake_audio = None
-    session._wake_ready = False
+    session._wake_session = False
+    session._input_ready_at = 0.0
     session._on_session_ready = None
     session._turn_rate_breaker = TurnRateCircuitBreaker()
     session._noise_bailed = False
@@ -514,8 +513,8 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     session.watchdog = DeadlineWatchdog()
     session._doa_poller = None
     session._connected_at = None
-    session._pending_wake_audio = None
-    session._wake_ready = False
+    session._wake_session = False
+    session._input_ready_at = 0.0
     session._on_session_ready = None
     session._turn_rate_breaker = TurnRateCircuitBreaker()
     session._noise_bailed = False
@@ -539,75 +538,22 @@ def test_record_loop_detects_human_during_assistant_playback() -> None:
     assert session.status.snapshot()["interruptions"] == 1
 
 
-def test_should_send_greeting_suppressed_when_wake_audio_pending() -> None:
+def test_should_send_greeting_false_for_wake_session() -> None:
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
     session._greeting_sent = False
-    session._pending_wake_audio = [AudioFrame(stereo_frame(-30.0), 16_000, 0.0)]
+    session._wake_session = True
     assert session._should_send_greeting() is False
 
 
-def test_should_send_greeting_true_without_wake_audio() -> None:
+def test_should_send_greeting_true_for_initial_always_connected_session() -> None:
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
     session._greeting_sent = False
-    session._pending_wake_audio = None
+    session._wake_session = False
     assert session._should_send_greeting() is True
 
 
-def test_should_send_greeting_false_after_greeting_sent() -> None:
+def test_should_send_greeting_false_after_always_connected_greeting() -> None:
     session = RealtimeRobotSession.__new__(RealtimeRobotSession)
     session._greeting_sent = True
-    session._pending_wake_audio = None
+    session._wake_session = False
     assert session._should_send_greeting() is False
-
-
-def test_record_loop_injects_pending_wake_audio_as_opening_turn() -> None:
-    stop_event = FakeStopEvent()
-    # Every live frame is silence: the turn must be opened by the injected wake
-    # audio (begin_turn), never by the energy VAD, and end on the silence rule.
-    frames = [stereo_frame(-60.0) for _ in range(60)]
-    session = RealtimeRobotSession.__new__(RealtimeRobotSession)
-    session.robot = type("Robot", (), {"media": FakeMedia(frames)})()
-    session.motion = FakeMotion()
-    session.config = AppConfig()
-    session.status = RuntimeStatus()
-    session.connection = FakeConnection(stop_event)
-    session._playback = PlaybackBuffer()
-    session._speaker = SpeakerWorker(type("M", (), {"push_audio_sample": lambda self, d: None})())
-    session.fsm = SessionStateMachine()
-    session._response_generation_done = True
-    drive_fsm(session.fsm, SessionState.LISTENING)
-    session._speaker_busy_until = time.monotonic() - 1.0
-    session._camera_enabled_callback = lambda: False
-    session._capture_camera_jpeg = lambda: None
-    session._camera_capture_task = None
-    session._last_camera_item_id = None
-    session._pending_camera_items = {}
-    session._camera_add_events = {}
-    session._camera_delete_events = {}
-    session._vad = EnergyTurnDetector()
-    session.watchdog = DeadlineWatchdog()
-    session._doa_poller = None
-    session._connected_at = None
-    session._pending_wake_audio = [AudioFrame(stereo_frame(-30.0), 16_000, 0.0)]
-    session._wake_ready = True
-    session._on_session_ready = None
-    session._greeting_sent = False
-    session._turn_rate_breaker = TurnRateCircuitBreaker()
-    session._noise_bailed = False
-
-    session._capture = CaptureWorker(session.robot.media, max_buffer_ms=60_000.0)
-    session._mic_ladder = AudioRecoveryLadder()
-    session._capture.start()
-    session._audio = session._capture.subscribe("realtime")
-    asyncio.run(session._record_loop(stop_event))
-    session._capture.close()
-
-    # The flush is the only code that clears _pending_wake_audio, and it appends
-    # before clearing — so a cleared field proves the wake audio was injected.
-    assert session._pending_wake_audio is None
-    assert session.connection.input_audio_buffer.appended >= 1
-    # The injected turn committed and requested a response, though the energy
-    # VAD never fired on the silent live frames.
-    assert session.connection.input_audio_buffer.committed == 1
-    assert session.connection.response.created == 1
-    assert session.status.snapshot()["phase"] == "thinking"

@@ -22,8 +22,14 @@ from openai.types.realtime import (
 )
 
 from .audio.capture import AudioPipelineStalled, AudioRecoveryLadder, CaptureWorker
-from .audio.fanout import AudioFrame, AudioSubscription
-from .audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
+from .audio.fanout import AudioSubscription
+from .audio.playback import (
+    READY_BEEP_DURATION_MS,
+    PlaybackBuffer,
+    PlaybackChunk,
+    SpeakerWorker,
+    make_ready_beep,
+)
 from .config import (
     AppConfig,
     greeting_instructions,
@@ -68,6 +74,8 @@ from .tool_executor import (
 from .vad import EnergyTurnDetector
 
 logger = logging.getLogger(__name__)
+
+READY_BEEP_OUTPUT_GUARD_SECONDS = 0.1
 
 
 class DoAPoller:
@@ -145,7 +153,7 @@ class RealtimeRobotSession:
         capture_camera_jpeg: Callable[[], bytes | None] | None = None,
         memory: MemoryManager | None = None,
         nap: NapConsolidator | None = None,
-        pending_wake_audio: list[AudioFrame] | None = None,
+        wake_session: bool = False,
         on_session_ready: Callable[[], None] | None = None,
     ) -> None:
         self.robot = robot
@@ -164,13 +172,11 @@ class RealtimeRobotSession:
         self._speaker = SpeakerWorker(self.robot.media, on_write=self._on_speaker_write)
         self._playback_io_lock = asyncio.Lock()
         self._greeting_sent = False
-        self._pending_wake_audio = pending_wake_audio
+        self._wake_session = wake_session
+        self._input_ready_at: float | None = None if wake_session else 0.0
+        self._discarded_wake_frames = 0
+        self._startup_failure_stage: str | None = None
         self._on_session_ready = on_session_ready
-        self._wake_ready = False
-        # In wake mode the live mic subscription must hold the whole connect
-        # window (spec §16/§17) so the user's question isn't dropped before
-        # session.updated; bound it at max_wake_buffer_seconds (spec §19).
-        self._wake_realtime_buffer_ms = float(self.config.max_wake_buffer_seconds) * 1000.0
         self.fsm = SessionStateMachine(on_transition=self._on_fsm_transition)
         self._response_generation_done = True
         self._speaker_busy_until = 0.0
@@ -223,6 +229,14 @@ class RealtimeRobotSession:
         self._barge_in_at: float | None = None
         self._first_write_pending = False
 
+    @property
+    def input_ready(self) -> bool:
+        return self._input_ready_at is not None
+
+    @property
+    def startup_failure_stage(self) -> str | None:
+        return self._startup_failure_stage
+
     def _observe_speech_latency(self, name: str) -> None:
         if self._speech_ended_at is None:
             return
@@ -245,14 +259,7 @@ class RealtimeRobotSession:
             self.status.record_event("response.first_audio_played")
 
     async def run(self, stop_event: Any) -> SessionOutcome:
-        self._audio = self._capture.subscribe(
-            "realtime",
-            max_buffer_ms=(
-                self._wake_realtime_buffer_ms
-                if self._pending_wake_audio is not None
-                else None
-            ),
-        )
+        self._audio = self._capture.subscribe("realtime")
         self.status.record_event("audio.capture.started")
         self._speaker.start()
         self.status.record_event("audio.playback.started")
@@ -314,6 +321,12 @@ class RealtimeRobotSession:
                 error = exc
             if stop_event.is_set():
                 break
+            if self._wake_session and not self.input_ready:
+                if self._startup_failure_stage is None:
+                    self._startup_failure_stage = "connection"
+                self.fsm.transition(SessionState.STOPPING, reason="wake_startup_failed")
+                self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
+                return SessionOutcome.STOPPED
             self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
             await self.reset_connection_state()
             if error is not None:
@@ -403,13 +416,28 @@ class RealtimeRobotSession:
                 self._doa_poller = DoAPoller(get_doa, stop_event)
                 self._doa_poller.start()
 
+            session_configured = asyncio.Event()
             tasks = [
                 asyncio.create_task(self._record_loop(stop_event), name="record-loop"),
                 asyncio.create_task(self._playback_loop(stop_event), name="playback-loop"),
-                asyncio.create_task(self._event_loop(stop_event), name="event-loop"),
+                asyncio.create_task(
+                    self._event_loop(stop_event, session_configured),
+                    name="event-loop",
+                ),
                 asyncio.create_task(self._watchdog_loop(), name="watchdog-loop"),
                 asyncio.create_task(self._supervisor_loop(stop_event), name="supervisor-loop"),
             ]
+            if self._wake_session and not self.input_ready:
+                tasks.append(
+                    asyncio.create_task(
+                        self._wake_readiness_loop(
+                            stop_event,
+                            session_configured,
+                            self.connection_epoch,
+                        ),
+                        name="wake-readiness-loop",
+                    )
+                )
             if self.nap is not None and self._memory_tools_active:
                 tasks.append(asyncio.create_task(self.nap.run(self._nap_idle), name="nap-loop"))
             try:
@@ -495,9 +523,7 @@ class RealtimeRobotSession:
         return {"language": language_option(self._current_language()).label}
 
     def _should_send_greeting(self) -> bool:
-        # No boot greeting when a wake utterance is about to be injected — the
-        # robot answers that instead of talking over it (spec §10).
-        return not self._greeting_sent and self._pending_wake_audio is None
+        return not self._greeting_sent and not self._wake_session
 
     async def _record_loop(self, stop_event: Any) -> None:
         source_rate = self.robot.media.get_input_audio_samplerate()
@@ -529,6 +555,10 @@ class RealtimeRobotSession:
                 action = self._mic_ladder.next_action(self._capture.frame_age_seconds())
                 await self._run_mic_recovery(action)
                 continue
+            ready_at = self._input_ready_at
+            if ready_at is None or frame.captured_at < ready_at:
+                self._discarded_wake_frames += 1
+                continue
             sample = frame.samples
             if not microphone_ready:
                 microphone_ready = True
@@ -536,39 +566,6 @@ class RealtimeRobotSession:
                     f"マイク入力を開始しました（{source_rate} Hz）",
                     key="event_mic_started",
                     params={"rate": source_rate},
-                )
-            # Wake-turn seeding (spec §10): inject the captured "hey reachy"
-            # pre-roll as the opening of the first user turn — exactly once,
-            # and only once session.updated has set the input format
-            # (_wake_ready). Live frames are held until then so nothing precedes
-            # the wake audio in the turn.
-            if self._pending_wake_audio is not None:
-                if not self._wake_ready:
-                    continue
-                for wake_frame in self._pending_wake_audio:
-                    wake_mono, _wch, _wlv = select_mono_float32(wake_frame.samples)
-                    wake_audio = resample_linear(
-                        wake_mono, wake_frame.sample_rate, self.config.input_rate
-                    )
-                    wake_encoded = base64.b64encode(
-                        float32_to_pcm16(wake_audio).tobytes()
-                    ).decode("ascii")
-                    await self._append_input_audio(wake_encoded)
-                    self.status.record_audio_sent()
-                self._pending_wake_audio = None
-                pre_roll.clear()
-                pre_roll_ms = 0.0
-                self._vad.begin_turn()
-                self.fsm.transition(SessionState.USER_SPEAKING, reason="wake_turn")
-                self.status.record_event("vad.started", reason="wake_turn")
-                self.motion.set_listening_enabled(True)
-                self.motion.set_idle_enabled(False)
-                self.status.set_phase(
-                    "user_speaking",
-                    "音声を聞いています",
-                    connected=True,
-                    event=True,
-                    detail_key="detail_user_speaking",
                 )
             mono, selected_channel, channel_levels = select_mono_float32(sample)
             dbfs = audio_level_dbfs(mono)
@@ -975,44 +972,118 @@ class RealtimeRobotSession:
                     self._playback_pushed_ms += pcm_out.size * 1_000.0 / target_rate
                     self.status.record_audio_output_played()
 
-    async def _event_loop(self, stop_event: Any) -> None:
+    async def _wake_readiness_loop(
+        self,
+        stop_event: Any,
+        session_configured: asyncio.Event,
+        epoch: int,
+    ) -> None:
+        await session_configured.wait()
+        if stop_event.is_set() or epoch != self.connection_epoch:
+            return
+
+        started_at = time.monotonic()
+        self.status.record_event("wake.ready_beep_started")
+        try:
+            sample_rate = self.robot.media.get_output_audio_samplerate()
+            beep = make_ready_beep(sample_rate)
+        except Exception:  # noqa: BLE001 — any local tone/setup failure aborts wake startup
+            self._startup_failure_stage = "ready_beep_generation"
+            stop_event.set()
+            return
+        receipt = await asyncio.to_thread(
+            self._speaker.submit_tracked,
+            beep,
+            READY_BEEP_DURATION_MS,
+            started_at,
+            1.0,
+        )
+        if receipt is None:
+            self._startup_failure_stage = "ready_beep_enqueue"
+            stop_event.set()
+            return
+
+        while not receipt.done():
+            if stop_event.is_set() or epoch != self.connection_epoch:
+                return
+            await asyncio.sleep(0.01)
+        if not receipt.succeeded():
+            self._startup_failure_stage = "ready_beep_write"
+            stop_event.set()
+            return
+
+        ready_at = started_at + (READY_BEEP_DURATION_MS / 1_000.0) + READY_BEEP_OUTPUT_GUARD_SECONDS
+        await self._sleep_unless_stopped(stop_event, max(0.0, ready_at - time.monotonic()))
+        if stop_event.is_set() or epoch != self.connection_epoch:
+            return
+
+        self._vad.reset_turn()
+        gate_opened_at = time.monotonic()
+        self._input_ready_at = gate_opened_at
+        dropped_by_subscription = self._audio.dropped_frames if self._audio is not None else 0
+        session_started_at = self._session_started_at or started_at
+        self.status.record_event(
+            "wake.ready_beep_completed",
+            startup_duration_seconds=round(gate_opened_at - session_started_at, 3),
+            discarded_frames=self._discarded_wake_frames + dropped_by_subscription,
+        )
+        self.status.record_event("wake.input_gate_opened", epoch=epoch)
+        self._enter_listening(reason="wake_ready")
+
+    def _enter_listening(self, *, reason: str) -> None:
+        self.fsm.transition(SessionState.LISTENING, reason=reason)
+        self.status.set_phase(
+            "listening",
+            self._listening_detail(connected=True) + "（ロボット側で無音800msを判定）",
+            connected=True,
+            event=True,
+            detail_key="detail_listening_connected",
+            detail_params=self._listening_params(),
+        )
+        if self._on_session_ready is not None:
+            self._on_session_ready()
+
+    async def _handle_session_updated(
+        self,
+        session_configured: asyncio.Event,
+    ) -> None:
+        self.watchdog.disarm("session_update")
+        self.status.clear_error()
+        self._connected_epoch = self.connection_epoch
+        self.status.record_event("realtime.connected", epoch=self.connection_epoch)
+        if self._wake_session and not self.input_ready:
+            session_configured.set()
+            return
+        self._enter_listening(reason="session_updated")
+        if self._should_send_greeting():
+            self._greeting_sent = True
+            self.fsm.transition(SessionState.WAITING_RESPONSE, reason="greeting_requested")
+            self._response_generation_done = False
+            self.watchdog.arm("response_create")
+            self.status.record_event("response.requested", reason="greeting")
+            await self.connection.response.create(
+                response={
+                    "instructions": greeting_instructions(self._current_language()),
+                    "output_modalities": ["audio"],
+                    "tool_choice": "none",
+                }
+            )
+            self.status.record_response_request()
+
+    async def _event_loop(
+        self,
+        stop_event: Any,
+        session_configured: asyncio.Event | None = None,
+    ) -> None:
+        if session_configured is None:
+            session_configured = asyncio.Event()
         async for event in self.connection:
             if stop_event.is_set():
                 return
             event_type = event.type
             self.status.record_realtime_event(event_type)
             if event_type == "session.updated":
-                self.watchdog.disarm("session_update")
-                self.status.clear_error()
-                self.fsm.transition(SessionState.LISTENING, reason="session_updated")
-                self._connected_epoch = self.connection_epoch
-                self.status.record_event("realtime.connected", epoch=self.connection_epoch)
-                self.status.set_phase(
-                    "listening",
-                    self._listening_detail(connected=True)
-                    + "（ロボット側で無音800msを判定）",
-                    connected=True,
-                    event=True,
-                    detail_key="detail_listening_connected",
-                    detail_params=self._listening_params(),
-                )
-                self._wake_ready = True
-                if self._on_session_ready is not None:
-                    self._on_session_ready()
-                if self._should_send_greeting():
-                    self._greeting_sent = True
-                    self.fsm.transition(SessionState.WAITING_RESPONSE, reason="greeting_requested")
-                    self._response_generation_done = False
-                    self.watchdog.arm("response_create")
-                    self.status.record_event("response.requested", reason="greeting")
-                    await self.connection.response.create(
-                        response={
-                            "instructions": greeting_instructions(self._current_language()),
-                            "output_modalities": ["audio"],
-                            "tool_choice": "none",
-                        }
-                    )
-                    self.status.record_response_request()
+                await self._handle_session_updated(session_configured)
             elif event_type == "input_audio_buffer.speech_started":
                 await self._clear_playback()
                 self.motion.stop_current(reason="barge_in")
