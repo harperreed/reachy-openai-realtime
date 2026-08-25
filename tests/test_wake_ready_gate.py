@@ -2,14 +2,20 @@
 # ABOUTME: Covers discard ordering, stop/epoch races, and pre-ready reconnect suppression.
 
 import asyncio
+import base64
+import logging
+import queue
 import threading
 import time
 from types import SimpleNamespace
 
 import numpy as np
-from conftest import FakeRecorder
+from conftest import FakeRealtimeClient, FakeRecorder, ScriptedConnection, realtime_event
 
+from reachy_openai_realtime import realtime as realtime_mod
+from reachy_openai_realtime.audio.capture import CaptureWorker
 from reachy_openai_realtime.audio.fanout import AudioFrame, AudioSubscription
+from reachy_openai_realtime.audio.playback import SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
@@ -27,11 +33,23 @@ class GateMedia:
     def get_output_audio_samplerate(self) -> int:
         return 24_000
 
-    def get_DoA(self) -> None:
-        return None
-
     def push_audio_sample(self, data: np.ndarray) -> None:
         self.pushed.append(data)
+
+
+class QueuedGateMedia(GateMedia):
+    def __init__(self) -> None:
+        super().__init__()
+        self._samples: queue.Queue[np.ndarray] = queue.Queue()
+
+    def feed(self, samples: np.ndarray) -> None:
+        self._samples.put(samples)
+
+    def get_audio_sample(self) -> np.ndarray | None:
+        try:
+            return self._samples.get(timeout=0.05)
+        except queue.Empty:
+            return None
 
 
 class BlockingGateMedia(GateMedia):
@@ -59,14 +77,52 @@ class GateMotion:
     def set_speaking_enabled(self, enabled: bool) -> None:
         pass
 
+    def stop_current(self, *, reason: str = "stop") -> None:
+        pass
+
+    def emotion_names(self) -> list[str]:
+        return []
+
+    def dance_names(self) -> list[str]:
+        return []
+
+
+class GateCapture:
+    def __init__(self) -> None:
+        self.subscription = AudioSubscription("realtime")
+
+    def subscribe(self, name: str) -> AudioSubscription:
+        assert name == "realtime"
+        return self.subscription
+
+    def unsubscribe(self, name: str) -> None:
+        assert name == "realtime"
+
+    def frame_age_seconds(self) -> float:
+        return 0.0
+
+
+class StopAfterPopSubscription:
+    dropped_frames = 0
+
+    def __init__(self, stop_event: threading.Event, frame: AudioFrame) -> None:
+        self._stop_event = stop_event
+        self._frame = frame
+
+    def pop(self, timeout_seconds: float) -> AudioFrame:
+        self._stop_event.set()
+        return self._frame
+
 
 class CountingInputBuffer:
     def __init__(self) -> None:
         self.appended = 0
         self.committed = 0
+        self.audio: list[str] = []
 
     async def append(self, *, audio: str) -> None:
         self.appended += 1
+        self.audio.append(audio)
 
     async def commit(self) -> None:
         self.committed += 1
@@ -158,6 +214,112 @@ def test_frame_captured_before_gate_stays_discarded_after_gate_opens(monkeypatch
     assert session._vad.speech_active is False
 
 
+def test_frame_returned_after_stop_closes_gate_without_processing(monkeypatch) -> None:
+    session = make_gate_session(monkeypatch, GateMedia())
+    input_buffer = CountingInputBuffer()
+    session.connection = SimpleNamespace(
+        input_audio_buffer=input_buffer,
+        response=CountingResponse(),
+    )
+    session._input_ready_at = 0.0
+    session.fsm.transition(SessionState.CONNECTING, reason="test")
+    session.fsm.transition(SessionState.INITIALIZING, reason="test")
+    session.fsm.transition(SessionState.LISTENING, reason="test")
+    session._vad.begin_turn()
+    stop_event = threading.Event()
+    session._audio = StopAfterPopSubscription(
+        stop_event,
+        AudioFrame(
+            samples=np.full(160, 20_000, dtype=np.int16),
+            sample_rate=16_000,
+            captured_at=time.monotonic(),
+        ),
+    )
+
+    asyncio.run(session._record_loop(stop_event))
+
+    assert input_buffer.appended == 0
+    assert session._vad.speech_active is False
+    assert session.input_ready is False
+
+
+def test_final_session_stop_closes_open_input_gate(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-wake-ready-gate")
+    capture = GateCapture()
+    session = RealtimeRobotSession(
+        robot=SimpleNamespace(media=GateMedia()),
+        motion=GateMotion(),
+        config=AppConfig(),
+        status=RuntimeStatus(),
+        capture=capture,
+        wake_session=True,
+    )
+    session._input_ready_at = 0.0
+    stop_event = threading.Event()
+    stop_event.set()
+
+    outcome = asyncio.run(session.run(stop_event))
+
+    assert outcome is SessionOutcome.STOPPED
+    assert session.input_ready is False
+
+
+def test_real_capture_discards_pre_gate_pcm_and_accepts_post_gate_pcm_in_order(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-wake-ready-gate")
+    media = QueuedGateMedia()
+    capture = CaptureWorker(media)
+    capture.start()
+    session = RealtimeRobotSession(
+        robot=SimpleNamespace(media=media),
+        motion=GateMotion(),
+        config=AppConfig(),
+        status=RuntimeStatus(),
+        capture=capture,
+        wake_session=True,
+    )
+    input_buffer = CountingInputBuffer()
+    session.connection = SimpleNamespace(
+        input_audio_buffer=input_buffer,
+        response=CountingResponse(),
+    )
+    session._audio = capture.subscribe("realtime")
+    session.fsm.transition(SessionState.CONNECTING, reason="test")
+    session.fsm.transition(SessionState.INITIALIZING, reason="test")
+    session.fsm.transition(SessionState.LISTENING, reason="test")
+    stop_event = threading.Event()
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session._record_loop(stop_event))
+        media.feed(np.full(160, 0.3, dtype=np.float32))
+        deadline = time.monotonic() + 1.0
+        while session._discarded_wake_frames < 1 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+
+        session._input_ready_at = time.monotonic()
+        session._vad.begin_turn()
+        media.feed(np.full(160, 0.1, dtype=np.float32))
+        media.feed(np.full(160, 0.2, dtype=np.float32))
+        deadline = time.monotonic() + 1.0
+        while input_buffer.appended < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        capture.unsubscribe("realtime")
+        capture.close()
+
+    decoded = [np.frombuffer(base64.b64decode(audio), dtype=np.int16) for audio in input_buffer.audio]
+    assert session._discarded_wake_frames == 1
+    assert input_buffer.appended == 2
+    assert len(decoded) == 2
+    assert float(np.mean(decoded[0])) < float(np.mean(decoded[1]))
+    assert input_buffer.committed == 0
+    assert session.connection.response.created == 0
+
+
 def test_ready_beep_opens_gate_before_ready_callback(monkeypatch) -> None:
     media = GateMedia()
     callback_gate_values: list[bool] = []
@@ -188,6 +350,201 @@ def test_ready_beep_opens_gate_before_ready_callback(monkeypatch) -> None:
     assert session.input_ready is True
     assert session.fsm.state is SessionState.LISTENING
     assert callback_gate_values == [True]
+
+
+def test_ready_beep_guard_starts_after_slow_generation(monkeypatch) -> None:
+    media = GateMedia()
+    session = make_gate_session(monkeypatch, media)
+    session.connection_epoch = 1
+    session.fsm.transition(SessionState.CONNECTING, reason="test")
+    session.fsm.transition(SessionState.INITIALIZING, reason="test")
+    session._speaker.start()
+    clock = SimpleNamespace(now=10.0)
+    requested_sleeps: list[float] = []
+    make_beep = realtime_mod.make_ready_beep
+
+    def slow_make_beep(sample_rate: int) -> np.ndarray:
+        clock.now += 5.0
+        return make_beep(sample_rate)
+
+    async def record_sleep(stop_event: threading.Event, seconds: float) -> None:
+        requested_sleeps.append(seconds)
+
+    monkeypatch.setattr(realtime_mod, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(realtime_mod, "make_ready_beep", slow_make_beep)
+    session._sleep_unless_stopped = record_sleep  # type: ignore[method-assign]
+    try:
+
+        async def scenario() -> None:
+            configured = asyncio.Event()
+            configured.set()
+            await session._wake_readiness_loop(threading.Event(), configured, 1)
+
+        asyncio.run(scenario())
+    finally:
+        session._speaker.close()
+
+    expected_guard = (
+        realtime_mod.READY_BEEP_DURATION_MS / 1_000.0
+        + realtime_mod.READY_BEEP_OUTPUT_GUARD_SECONDS
+    )
+    assert len(requested_sleeps) == 1
+    assert abs(requested_sleeps[0] - expected_guard) < 1e-9
+
+
+def test_session_updated_keeps_consuming_events_while_ready_beep_is_blocked(monkeypatch) -> None:
+    media = BlockingGateMedia()
+    session = make_gate_session(monkeypatch, media)
+    connection = ScriptedConnection(
+        [
+            realtime_event("session.updated", session=None),
+            realtime_event("rate_limits.updated"),
+        ]
+    )
+    session.client = FakeRealtimeClient([connection])
+    session._audio = AudioSubscription("realtime")
+    session.connection_epoch = 1
+    session.fsm.transition(SessionState.CONNECTING, reason="test")
+    stop_event = threading.Event()
+    session._speaker.start()
+    try:
+
+        async def scenario() -> None:
+            task = asyncio.create_task(session._run_connection(stop_event))
+            assert await asyncio.to_thread(media.write_started.wait, 1.0)
+            deadline = time.monotonic() + 1.0
+            while (
+                session.status.snapshot()["realtime_event_counts"].get("rate_limits.updated", 0)
+                < 1
+                and time.monotonic() < deadline
+            ):
+                await asyncio.sleep(0.01)
+
+            snapshot = session.status.snapshot()
+            assert snapshot["realtime_event_counts"]["session.updated"] == 1
+            assert snapshot["realtime_event_counts"]["rate_limits.updated"] == 1
+            assert session.fsm.state is SessionState.INITIALIZING
+            assert session.input_ready is False
+            assert connection.input_audio_buffer.appended == 0
+            assert connection.input_audio_buffer.committed == 0
+            assert connection.response.created == []
+
+            media.release_write.set()
+            deadline = time.monotonic() + 1.0
+            while not session.input_ready and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert session.input_ready is True
+            assert session.fsm.state is SessionState.LISTENING
+            stop_event.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
+        asyncio.run(scenario())
+    finally:
+        media.release_write.set()
+        session._speaker.close()
+
+    assert len(media.pushed) == 1
+    assert connection.input_audio_buffer.committed == 0
+    assert connection.response.created == []
+
+
+def test_ready_beep_enqueue_failure_stops_startup(monkeypatch) -> None:
+    media = GateMedia()
+    session = make_gate_session(monkeypatch, media)
+    session.connection_epoch = 1
+    session._speaker = SpeakerWorker(media, inbox_max=1)
+    assert session._speaker.submit(
+        np.zeros(1, dtype=np.float32),
+        duration_ms=1.0,
+        received_at=time.monotonic(),
+        timeout_seconds=0.0,
+    )
+    stop_event = threading.Event()
+    try:
+
+        async def scenario() -> None:
+            configured = asyncio.Event()
+            configured.set()
+            await session._wake_readiness_loop(stop_event, configured, 1)
+
+        asyncio.run(scenario())
+    finally:
+        session._speaker.close()
+
+    assert stop_event.is_set() is True
+    assert session.startup_failure_stage == "ready_beep_enqueue"
+    assert session.input_ready is False
+    assert media.pushed == []
+
+
+def test_ready_beep_speaker_write_failure_stops_startup(monkeypatch, caplog) -> None:
+    class FailingGateMedia(GateMedia):
+        def push_audio_sample(self, data: np.ndarray) -> None:
+            raise RuntimeError("speaker unavailable")
+
+    media = FailingGateMedia()
+    session = make_gate_session(monkeypatch, media)
+    session.connection_epoch = 1
+    stop_event = threading.Event()
+    session._speaker.start()
+    try:
+
+        async def scenario() -> None:
+            configured = asyncio.Event()
+            configured.set()
+            await session._wake_readiness_loop(stop_event, configured, 1)
+
+        with caplog.at_level(logging.ERROR):
+            asyncio.run(scenario())
+    finally:
+        session._speaker.close()
+
+    assert stop_event.is_set() is True
+    assert session.startup_failure_stage == "ready_beep_write"
+    assert session.input_ready is False
+    assert "speaker write failed" in caplog.text
+
+
+def test_awake_wake_session_reconnects_without_closing_gate_or_replaying_beep(monkeypatch) -> None:
+    media = GateMedia()
+    session = make_gate_session(monkeypatch, media)
+    session._input_ready_at = time.monotonic()
+    session._audio = AudioSubscription("realtime")
+    first = ScriptedConnection(
+        [realtime_event("session.updated", session=None)],
+        raise_after=ConnectionError("wifi lost"),
+    )
+    second_ready = threading.Event()
+    second = ScriptedConnection(
+        [realtime_event("session.updated", session=None)],
+        on_drained=second_ready.set,
+    )
+    session.client = FakeRealtimeClient([first, second])
+
+    async def no_backoff(stop_event: threading.Event, seconds: float) -> None:
+        await asyncio.sleep(0)
+
+    session._sleep_unless_stopped = no_backoff  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        task = asyncio.create_task(session._run_reconnect_loop(threading.Event()))
+        assert await asyncio.to_thread(second_ready.wait, 1.0)
+        assert session.connection_epoch == 2
+        assert session.input_ready is True
+        assert media.pushed == []
+        assert first.response.created == []
+        assert second.response.created == []
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+
+    assert session.input_ready is True
+    assert session.connection_epoch == 2
+    assert session.status.metrics.snapshot()["counters"]["reconnect_count"] == 1
 
 
 def test_stop_during_ready_beep_never_opens_gate(monkeypatch) -> None:

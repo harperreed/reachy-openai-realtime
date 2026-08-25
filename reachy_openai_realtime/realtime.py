@@ -292,6 +292,7 @@ class RealtimeRobotSession:
             self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
             return SessionOutcome.NOISE_BAIL if self._noise_bailed else SessionOutcome.STOPPED
         finally:
+            self._close_input_gate()
             stop_waiter.cancel()
             deadline.cancel()
             reconnect_task.cancel()
@@ -525,6 +526,10 @@ class RealtimeRobotSession:
     def _should_send_greeting(self) -> bool:
         return not self._greeting_sent and not self._wake_session
 
+    def _close_input_gate(self) -> None:
+        self._input_ready_at = None
+        self._vad.reset_turn()
+
     async def _record_loop(self, stop_event: Any) -> None:
         source_rate = self.robot.media.get_input_audio_samplerate()
         microphone_ready = False
@@ -551,6 +556,9 @@ class RealtimeRobotSession:
                     doa_poller = self._doa_poller
         while not stop_event.is_set():
             frame = await asyncio.to_thread(self._audio.pop, 0.25)
+            if stop_event.is_set():
+                self._close_input_gate()
+                return
             if frame is None:
                 action = self._mic_ladder.next_action(self._capture.frame_age_seconds())
                 await self._run_mic_recovery(action)
@@ -991,17 +999,19 @@ class RealtimeRobotSession:
             self._startup_failure_stage = "ready_beep_generation"
             stop_event.set()
             return
+        submission_started_at = time.monotonic()
         receipt = await asyncio.to_thread(
             self._speaker.submit_tracked,
             beep,
             READY_BEEP_DURATION_MS,
-            started_at,
+            submission_started_at,
             1.0,
         )
         if receipt is None:
             self._startup_failure_stage = "ready_beep_enqueue"
             stop_event.set()
             return
+        submitted_at = time.monotonic()
 
         while not receipt.done():
             if stop_event.is_set() or epoch != self.connection_epoch:
@@ -1012,7 +1022,7 @@ class RealtimeRobotSession:
             stop_event.set()
             return
 
-        ready_at = started_at + (READY_BEEP_DURATION_MS / 1_000.0) + READY_BEEP_OUTPUT_GUARD_SECONDS
+        ready_at = submitted_at + (READY_BEEP_DURATION_MS / 1_000.0) + READY_BEEP_OUTPUT_GUARD_SECONDS
         await self._sleep_unless_stopped(stop_event, max(0.0, ready_at - time.monotonic()))
         if stop_event.is_set() or epoch != self.connection_epoch:
             return
