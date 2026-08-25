@@ -154,6 +154,7 @@ class RealtimeRobotSession:
         memory: MemoryManager | None = None,
         nap: NapConsolidator | None = None,
         wake_session: bool = False,
+        accept_session_ready: Callable[[], bool] | None = None,
         on_session_ready: Callable[[], None] | None = None,
     ) -> None:
         self.robot = robot
@@ -176,6 +177,7 @@ class RealtimeRobotSession:
         self._input_ready_at: float | None = None if wake_session else 0.0
         self._discarded_wake_frames = 0
         self._startup_failure_stage: str | None = None
+        self._accept_session_ready = accept_session_ready
         self._on_session_ready = on_session_ready
         self.fsm = SessionStateMachine(on_transition=self._on_fsm_transition)
         self._response_generation_done = True
@@ -1025,6 +1027,8 @@ class RealtimeRobotSession:
         ready_at = submitted_at + (READY_BEEP_DURATION_MS / 1_000.0) + READY_BEEP_OUTPUT_GUARD_SECONDS
         await self._sleep_unless_stopped(stop_event, max(0.0, ready_at - time.monotonic()))
         if stop_event.is_set() or epoch != self.connection_epoch:
+            return
+        if self._accept_session_ready is not None and not self._accept_session_ready():
             return
 
         self._vad.reset_turn()

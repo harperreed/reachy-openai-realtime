@@ -394,8 +394,10 @@ class PresenceManager:
     # -- session -------------------------------------------------------
 
     def _run_session(self, pending: _PendingWake) -> None:
+        pending.wake_audio = None
         session_stop = pending.stop_event
         startup_resolved = threading.Event()
+        ready_accepted = threading.Event()
         deadline_expired = threading.Event()
         deadline_at = self._clock() + self._connect_timeout_seconds
         combined = _WakeStartupStop(
@@ -408,33 +410,47 @@ class PresenceManager:
             clock=self._clock,
         )
 
-        def _on_session_ready() -> None:
+        def _accept_session_ready() -> bool:
             accepted = False
-            deadline_won = False
+            should_stop = False
             with self._lock:
                 if startup_resolved.is_set():
-                    return
+                    return False
                 if (
                     session_stop.is_set()
                     or self._app_stop.is_set()
                     or pending.cancel_reason == "manual_sleep"
                 ):
                     startup_resolved.set()
+                    should_stop = True
                 elif combined._resolve_deadline_locked():
-                    deadline_won = True
+                    should_stop = True
                 elif self._states.state is PresenceState.WAKING:
+                    ready_accepted.set()
                     startup_resolved.set()
-                    self._states.transition(PresenceState.AWAKE, reason="session_ready")
                     accepted = True
                 else:
                     startup_resolved.set()
-            if deadline_won:
+                    should_stop = True
+            if should_stop:
                 session_stop.set()
-            elif accepted:
+            return accepted
+
+        def _on_session_ready() -> None:
+            published = False
+            with self._lock:
+                if (
+                    ready_accepted.is_set()
+                    and self._states.state is PresenceState.WAKING
+                ):
+                    self._states.transition(PresenceState.AWAKE, reason="session_ready")
+                    published = True
+            if published:
                 self._status.record_event("wake.session_ready")
 
         session = self._session_factory(
             wake_session=True,
+            accept_session_ready=_accept_session_ready,
             on_session_ready=_on_session_ready,
         )
 

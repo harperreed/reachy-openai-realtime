@@ -491,7 +491,12 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
             if boot_config.wake_enabled:
                 detector = self._build_wake_detector(boot_config)
 
-                def session_factory(*, wake_session, on_session_ready=None):
+                def session_factory(
+                    *,
+                    wake_session,
+                    accept_session_ready=None,
+                    on_session_ready=None,
+                ):
                     return RealtimeRobotSession(
                         reachy_mini,
                         motion,
@@ -504,6 +509,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                         memory=memory_manager,
                         nap=nap,
                         wake_session=wake_session,
+                        accept_session_ready=accept_session_ready,
                         on_session_ready=on_session_ready,
                     )
 

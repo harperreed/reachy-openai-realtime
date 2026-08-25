@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from conftest import FakeRealtimeClient, FakeRecorder, ScriptedConnection, realtime_event
 
 from reachy_openai_realtime import realtime as realtime_mod
@@ -324,8 +325,12 @@ def test_real_capture_discards_pre_gate_pcm_and_accepts_post_gate_pcm_in_order(m
 
 def test_ready_beep_opens_gate_before_ready_callback(monkeypatch) -> None:
     media = GateMedia()
+    acceptance_gate_values: list[bool] = []
     callback_gate_values: list[bool] = []
     session = make_gate_session(monkeypatch, media)
+    session._accept_session_ready = lambda: (
+        acceptance_gate_values.append(session.input_ready) or True
+    )
     session._on_session_ready = lambda: callback_gate_values.append(session.input_ready)
     recorder = FakeRecorder()
     session.status.attach_recorder(recorder)
@@ -351,7 +356,159 @@ def test_ready_beep_opens_gate_before_ready_callback(monkeypatch) -> None:
     assert media.pushed[0].dtype == np.float32
     assert session.input_ready is True
     assert session.fsm.state is SessionState.LISTENING
+    assert acceptance_gate_values == [False]
     assert callback_gate_values == [True]
+
+
+@pytest.mark.parametrize(
+    ("cancel_before_acceptance", "gate_opens"),
+    [(True, False), (False, True)],
+)
+def test_presence_acceptance_linearizes_manual_cancel(
+    monkeypatch,
+    cancel_before_acceptance: bool,
+    gate_opens: bool,
+) -> None:
+    class PresenceGateMotion(GateMotion):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def wake_acknowledge(self) -> None:
+            self.calls.append("wake")
+
+        def connection_failed_motion(self) -> None:
+            self.calls.append("fail")
+
+        def sleeping_pose(self) -> None:
+            self.calls.append("sleep")
+
+    acceptance_poised = threading.Event()
+    release_acceptance = threading.Event()
+    callback_gate_values: list[bool] = []
+    media = GateMedia()
+    motion = PresenceGateMotion()
+    status = RuntimeStatus()
+    recorder = FakeRecorder()
+    status.attach_recorder(recorder)
+    session_holder: list[RealtimeRobotSession] = []
+    input_buffer = CountingInputBuffer()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-wake-ready-cancel-race")
+
+    def session_factory(
+        *,
+        wake_session,
+        accept_session_ready,
+        on_session_ready=None,
+    ):
+        assert wake_session is True
+
+        def gated_acceptance() -> bool:
+            assert accept_session_ready is not None
+            if cancel_before_acceptance:
+                acceptance_poised.set()
+                assert release_acceptance.wait(timeout=1.0)
+                return accept_session_ready()
+            accepted = accept_session_ready()
+            acceptance_poised.set()
+            assert release_acceptance.wait(timeout=1.0)
+            return accepted
+
+        def counted_ready() -> None:
+            session = session_holder[0]
+            callback_gate_values.append(session.input_ready)
+            assert on_session_ready is not None
+            on_session_ready()
+
+        session = RealtimeRobotSession(
+            robot=SimpleNamespace(media=media),
+            motion=motion,
+            config=AppConfig(),
+            status=status,
+            capture=SimpleNamespace(frame_age_seconds=lambda: 0.0),
+            wake_session=True,
+            accept_session_ready=gated_acceptance,
+            on_session_ready=counted_ready,
+        )
+        session.connection_epoch = 1
+        session.fsm.transition(SessionState.CONNECTING, reason="test")
+        session.fsm.transition(SessionState.INITIALIZING, reason="test")
+        session._audio = AudioSubscription("realtime")
+        session.connection = SimpleNamespace(
+            input_audio_buffer=input_buffer,
+            response=CountingResponse(),
+        )
+        session._audio._offer(
+            AudioFrame(
+                samples=np.full(160, 20_000, dtype=np.int16),
+                sample_rate=16_000,
+                captured_at=time.monotonic(),
+            )
+        )
+        session._speaker.start()
+
+        async def skip_guard(_stop_event, _seconds: float) -> None:
+            return None
+
+        async def run_readiness(stop_event) -> SessionOutcome:
+            configured = asyncio.Event()
+            configured.set()
+            session._sleep_unless_stopped = skip_guard  # type: ignore[method-assign]
+            record_task = asyncio.create_task(session._record_loop(stop_event))
+            try:
+                await session._wake_readiness_loop(stop_event, configured, 1)
+            finally:
+                stop_event.set()
+                await asyncio.wait_for(record_task, timeout=1.0)
+            return SessionOutcome.STOPPED
+
+        session.run = run_readiness  # type: ignore[method-assign]
+        session_holder.append(session)
+        return session
+
+    manager = PresenceManager(
+        capture=SimpleNamespace(),
+        detector=None,
+        motion=motion,
+        session_factory=session_factory,
+        status=status,
+        connect_timeout_seconds=10.0,
+    )
+    manager._app_stop = threading.Event()
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+    pending = manager._pending
+    assert pending is not None
+
+    session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
+    session_thread.start()
+    sleep_result: dict[str, object] | None = None
+    try:
+        assert acceptance_poised.wait(timeout=1.0)
+        sleep_result = manager.request_sleep()
+    finally:
+        release_acceptance.set()
+        session_thread.join(timeout=1.0)
+        if session_holder:
+            session_holder[0]._speaker.close()
+
+    assert not session_thread.is_alive()
+    assert sleep_result == {"ok": True, "state": "sleeping"}
+    session = session_holder[0]
+    names = [name for name, _fields in recorder.events]
+    assert ("wake.input_gate_opened" in names) is gate_opens
+    assert ("wake.ready_beep_completed" in names) is gate_opens
+    assert ("wake.session_ready" in names) is gate_opens
+    assert callback_gate_values == ([True] if gate_opens else [])
+    assert any(
+        name == "presence.transition" and fields.get("to_state") == "awake"
+        for name, fields in recorder.events
+    ) is gate_opens
+    assert input_buffer.appended == 0
+    assert input_buffer.committed == 0
+    assert session.connection.response.created == 0
+    assert manager.state is PresenceState.SLEEPING
+    assert "fail" not in motion.calls
 
 
 def test_presence_deadline_stops_real_readiness_loop_before_gate_opens(monkeypatch) -> None:
@@ -380,7 +537,12 @@ def test_presence_deadline_stops_real_readiness_loop_before_gate_opens(monkeypat
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-wake-ready-deadline")
     monkeypatch.setattr(realtime_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
 
-    def session_factory(*, wake_session, on_session_ready=None):
+    def session_factory(
+        *,
+        wake_session,
+        accept_session_ready,
+        on_session_ready=None,
+    ):
         nonlocal callback_count
         assert wake_session is True
 
@@ -397,6 +559,7 @@ def test_presence_deadline_stops_real_readiness_loop_before_gate_opens(monkeypat
             status=status,
             capture=SimpleNamespace(frame_age_seconds=lambda: 0.0),
             wake_session=True,
+            accept_session_ready=accept_session_ready,
             on_session_ready=counted_ready,
         )
         session.connection_epoch = 1
