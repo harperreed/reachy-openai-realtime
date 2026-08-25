@@ -165,6 +165,7 @@ class SpeakerWorker:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        self.flush()
 
     def submit(self, pcm: np.ndarray, duration_ms: float, received_at: float, timeout_seconds: float) -> bool:
         return self._submit(_SpeakerWrite(pcm, duration_ms, received_at), timeout_seconds)

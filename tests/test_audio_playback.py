@@ -150,7 +150,13 @@ def test_ready_beep_has_expected_shape_frequency_and_amplitude() -> None:
         assert beep.dtype == np.float32
         assert beep.ndim == 1
         assert len(beep) == round(sample_rate * READY_BEEP_DURATION_MS / 1_000.0)
-        assert float(np.max(np.abs(beep))) <= READY_BEEP_AMPLITUDE + np.finfo(np.float32).eps
+        actual_peak = float(np.max(np.abs(beep)))
+        assert np.isclose(
+            actual_peak,
+            READY_BEEP_AMPLITUDE,
+            rtol=1e-5,
+            atol=np.finfo(np.float32).eps,
+        )
         frequencies = np.fft.rfftfreq(len(beep), d=1.0 / sample_rate)
         peak = frequencies[int(np.argmax(np.abs(np.fft.rfft(beep))))]
         assert abs(peak - READY_BEEP_FREQUENCY_HZ) <= sample_rate / len(beep)
@@ -216,6 +222,20 @@ def test_flush_fails_a_queued_tracked_write() -> None:
     )
     assert receipt is not None
     worker.flush()
+    assert receipt.done() is True
+    assert receipt.succeeded() is False
+
+
+def test_close_fails_a_queued_tracked_write() -> None:
+    worker = SpeakerWorker(FakeSpeakerMedia())
+    receipt = worker.submit_tracked(
+        make_ready_beep(24_000),
+        READY_BEEP_DURATION_MS,
+        time.monotonic(),
+        timeout_seconds=0.1,
+    )
+    assert receipt is not None
+    worker.close()
     assert receipt.done() is True
     assert receipt.succeeded() is False
 
