@@ -1,11 +1,20 @@
 # ABOUTME: Tests for PlaybackBuffer (jitter buffer) and SpeakerWorker (speaker thread).
 # ABOUTME: Covers FIFO ordering, drop-oldest overflow, epoch filtering, and worker lifecycle.
+import logging
 import time
 
 import numpy as np
 from conftest import FakeSpeakerMedia
 
-from reachy_openai_realtime.audio.playback import PlaybackBuffer, PlaybackChunk, SpeakerWorker
+from reachy_openai_realtime.audio.playback import (
+    READY_BEEP_AMPLITUDE,
+    READY_BEEP_DURATION_MS,
+    READY_BEEP_FREQUENCY_HZ,
+    PlaybackBuffer,
+    PlaybackChunk,
+    SpeakerWorker,
+    make_ready_beep,
+)
 
 
 def chunk(ms: float, *, epoch: int = 1, response_id: str = "resp_1") -> PlaybackChunk:
@@ -133,6 +142,102 @@ def test_speaker_worker_flush_drops_queued_audio() -> None:
         assert media.pushed == []
     finally:
         worker.close()
+
+
+def test_ready_beep_has_expected_shape_frequency_and_amplitude() -> None:
+    for sample_rate in (16_000, 48_000):
+        beep = make_ready_beep(sample_rate)
+        assert beep.dtype == np.float32
+        assert beep.ndim == 1
+        assert len(beep) == round(sample_rate * READY_BEEP_DURATION_MS / 1_000.0)
+        actual_peak = float(np.max(np.abs(beep)))
+        assert np.isclose(
+            actual_peak,
+            READY_BEEP_AMPLITUDE,
+            rtol=1e-5,
+            atol=np.finfo(np.float32).eps,
+        )
+        frequencies = np.fft.rfftfreq(len(beep), d=1.0 / sample_rate)
+        peak = frequencies[int(np.argmax(np.abs(np.fft.rfft(beep))))]
+        assert abs(peak - READY_BEEP_FREQUENCY_HZ) <= sample_rate / len(beep)
+
+
+def test_tracked_speaker_write_reports_success() -> None:
+    media = FakeSpeakerMedia()
+    worker = SpeakerWorker(media)
+    worker.start()
+    try:
+        beep = make_ready_beep(24_000)
+        receipt = worker.submit_tracked(
+            beep,
+            READY_BEEP_DURATION_MS,
+            time.monotonic(),
+            timeout_seconds=1.0,
+        )
+        assert receipt is not None
+        deadline = time.monotonic() + 2.0
+        while not receipt.done() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert receipt.done() is True
+        assert receipt.succeeded() is True
+        assert len(media.pushed) == 1
+        np.testing.assert_array_equal(media.pushed[0], beep)
+    finally:
+        worker.close()
+
+
+def test_tracked_speaker_write_reports_failure(caplog) -> None:
+    class FailingMedia:
+        def push_audio_sample(self, data: np.ndarray) -> None:
+            raise RuntimeError("speaker unavailable")
+
+    with caplog.at_level(logging.ERROR):
+        worker = SpeakerWorker(FailingMedia())
+        worker.start()
+        try:
+            receipt = worker.submit_tracked(
+                make_ready_beep(24_000),
+                READY_BEEP_DURATION_MS,
+                time.monotonic(),
+                timeout_seconds=1.0,
+            )
+            assert receipt is not None
+            deadline = time.monotonic() + 2.0
+            while not receipt.done() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert receipt.done() is True
+            assert receipt.succeeded() is False
+        finally:
+            worker.close()
+    assert "speaker write failed" in caplog.text
+
+
+def test_flush_fails_a_queued_tracked_write() -> None:
+    worker = SpeakerWorker(FakeSpeakerMedia())
+    receipt = worker.submit_tracked(
+        make_ready_beep(24_000),
+        READY_BEEP_DURATION_MS,
+        time.monotonic(),
+        timeout_seconds=0.1,
+    )
+    assert receipt is not None
+    worker.flush()
+    assert receipt.done() is True
+    assert receipt.succeeded() is False
+
+
+def test_close_fails_a_queued_tracked_write() -> None:
+    worker = SpeakerWorker(FakeSpeakerMedia())
+    receipt = worker.submit_tracked(
+        make_ready_beep(24_000),
+        READY_BEEP_DURATION_MS,
+        time.monotonic(),
+        timeout_seconds=0.1,
+    )
+    assert receipt is not None
+    worker.close()
+    assert receipt.done() is True
+    assert receipt.succeeded() is False
 
 
 # ---------------------------------------------------------------------------

@@ -5,11 +5,14 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+import pytest
 from conftest import FakeRecorder
 from reachy_mini.utils import create_head_pose
 
 from reachy_openai_realtime.audio.capture import AudioPipelineStalled
 from reachy_openai_realtime.main import ReachyOpenaiRealtime
+from reachy_openai_realtime.motion import recorded_moves
+from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.session.recovery import SessionOutcome
 from reachy_openai_realtime.session.supervisor import RestartBudget
 
@@ -71,6 +74,21 @@ class FakeRobot:
 
     def cancel_move(self) -> None:
         pass
+
+
+class EmptyRecordedMoves:
+    """In-memory SDK loader result for app-loop tests."""
+
+    def list_moves(self) -> list[str]:
+        return []
+
+
+@pytest.fixture(autouse=True)
+def in_memory_recorded_moves(monkeypatch) -> None:
+    def load_empty_moves(_dataset: str) -> EmptyRecordedMoves:
+        return EmptyRecordedMoves()
+
+    monkeypatch.setattr(recorded_moves, "_default_loader", load_empty_moves)
 
 
 # ---------------------------------------------------------------------------
@@ -410,4 +428,15 @@ def test_app_loop_wake_enabled_runs_presence_manager(tmp_path, monkeypatch) -> N
     assert built.get("ran") is True, "PresenceManager.run() was not called"
     assert built["kwargs"]["detector"] is None
     assert built["kwargs"]["capture"] is not None
+    accept_session_ready = lambda open_gate: True
+    on_session_ready = lambda: None
+    session = built["kwargs"]["session_factory"](
+        wake_session=True,
+        accept_session_ready=accept_session_ready,
+        on_session_ready=on_session_ready,
+    )
+    assert isinstance(session, RealtimeRobotSession)
+    assert session._wake_session is True
+    assert session._accept_session_ready is accept_session_ready
+    assert session._on_session_ready is on_session_ready
     assert app._presence is None  # cleared in the run() finally

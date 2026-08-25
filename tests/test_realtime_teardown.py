@@ -29,7 +29,7 @@ class _TeardownMotion:
         self.calls.append(("idle", enabled))
 
 
-async def _honor_stop(stop_event) -> None:
+async def _honor_stop(stop_event, _session_configured=None) -> None:
     """Cooperative loop that returns promptly once stop flips (record/playback/event)."""
     while not stop_event.is_set():
         await asyncio.sleep(0.02)
@@ -69,6 +69,8 @@ def _make_idle_session(
     session._doa_poller = None
     session.connection_epoch = 1
     session._connected_epoch = 1
+    session._wake_session = False
+    session._input_ready_at = 0.0
     session._memory_tools_active = False
     session._connected_at = None
     session._last_camera_item_id = None
@@ -116,7 +118,7 @@ def test_task_exception_propagates_for_reconnect_when_not_stopped() -> None:
     # classifier drives a reconnect. The stop-race must not swallow the error.
     boom = RuntimeError("socket dropped")
 
-    async def raising_event(stop_event) -> None:
+    async def raising_event(stop_event, _session_configured=None) -> None:
         await asyncio.sleep(0.02)
         raise boom
 

@@ -79,6 +79,7 @@
     phase_thinking: ["Understanding", "理解中", "正在理解", "이해 중", "Comprendiendo", "Compréhension", "Verarbeitet", "Comprensione", "A compreender"],
     phase_responding: ["Generating response", "応答中", "正在生成回复", "응답 생성 중", "Generando respuesta", "Génération de la réponse", "Antwort wird erstellt", "Generazione risposta", "A gerar a resposta"],
     phase_assistant_speaking: ["Speaking", "発話中", "正在说话", "말하는 중", "Hablando", "Parle", "Spricht", "Sta parlando", "A falar"],
+    phase_sleeping: ["Sleeping", "スリープ中", "休眠中", "수면 중", "En reposo", "En veille", "Im Ruhemodus", "In pausa", "Em repouso"],
     phase_disconnected: ["Disconnected", "接続切れ", "已断开连接", "연결 끊김", "Desconectado", "Déconnecté", "Getrennt", "Disconnesso", "Desligado"],
     phase_error: ["Error", "エラー", "错误", "오류", "Error", "Erreur", "Fehler", "Errore", "Erro"],
     phase_stopped: ["Stopped", "停止中", "已停止", "중지됨", "Detenido", "Arrêté", "Gestoppt", "Arrestato", "Parado"],

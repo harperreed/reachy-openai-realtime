@@ -64,6 +64,17 @@ def test_main_js_wires_presence_and_endpoints() -> None:
     assert "/api/presence/sleep" in js
 
 
+def test_sleeping_phase_is_known_and_translated_for_every_locale() -> None:
+    main_js = (STATIC / "main.js").read_text(encoding="utf-8")
+    i18n_js = (STATIC / "i18n.js").read_text(encoding="utf-8")
+
+    assert '"assistant_speaking", "sleeping", "disconnected"' in main_js
+    assert (
+        'phase_sleeping: ["Sleeping", "スリープ中", "休眠中", "수면 중", '
+        '"En reposo", "En veille", "Im Ruhemodus", "In pausa", "Em repouso"]'
+    ) in i18n_js
+
+
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
@@ -124,6 +135,20 @@ def test_dashboard_classifier_discovers_node_from_path(tmp_path: Path, monkeypat
 def test_wake_button_stays_enabled_for_sleeping_safety_latch() -> None:
     js = (STATIC / "main.js").read_text(encoding="utf-8")
     assert 'document.getElementById("wake-button").disabled = !(presence === "sleeping" || presence === "error");' in js
+
+
+def test_sleep_button_is_enabled_while_waking_or_awake() -> None:
+    js = (STATIC / "main.js").read_text(encoding="utf-8")
+    assert (
+        'document.getElementById("sleep-button").disabled = '
+        '!(presence === "waking" || presence === "awake");'
+    ) in js
+
+
+def test_sleeping_status_dot_does_not_pulse() -> None:
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    assert ".status-dot.sleeping" in css
+    assert ".status-dot.sleeping { background: #667383; box-shadow: none; animation: none; }" in css
 
 
 def test_i18n_has_english_wake_rows() -> None:

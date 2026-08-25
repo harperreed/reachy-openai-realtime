@@ -156,3 +156,15 @@
   and also survives reconnects. Transcript classification was removed: word-like noise resets it and
   input transcription costs money. `_EitherStop.set()` targets the session-local event. A noise bail
   latches wake words until manual wake or app restart.
+- **Do not treat poor speech understanding as an old hardware limit.** Doctor Biz reports that Reachy
+  understood speech before the 2026-08-24 deployment. A controlled test on the night robot produced
+  four committed turns and three response interruptions from one prompt, but structured logs show
+  self-interruptions also occurred on the prior `3036352` deployment. That proves the feedback loop,
+  not when the understanding regression began. Keep the app stopped and use an exact-revision A/B or
+  another controlled test before assigning the regression to VAD, prompts, or the Realtime model.
+- **The speech-understanding regression is isolated to wake-enabled startup.** In a 2026-08-24 night-
+  robot A/B, the same fork with `REACHY_OPENAI_REALTIME_WAKE_ENABLED=0` worked well in real conversation
+  according to Doctor Biz. Do not label its turn/interruption counters as false positives: Doctor Biz
+  was speaking during that test. The original app is also always connected. Investigate continuity and
+  ordering across wake detection → cold Realtime connect → buffered-audio replay before changing VAD,
+  playback, the model, or the ReSpeaker configuration.

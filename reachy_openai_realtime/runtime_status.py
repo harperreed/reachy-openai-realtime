@@ -86,7 +86,17 @@ class RuntimeStatus:
         state_name = getattr(new, "name", str(new)).lower()
         with self._lock:
             self._presence_state = state_name
-            if state_name == "sleeping":
+            if state_name == "waking":
+                self._phase = "connecting"
+                self._detail = "Realtime APIへ接続しています"
+                self._detail_key = "detail_connecting"
+                self._detail_params = {}
+                self._connected = False
+            elif state_name == "sleeping":
+                self._phase = "sleeping"
+                self._detail = "Asleep · say “hey reachy”"
+                self._detail_key = "presence_sleeping"
+                self._detail_params = {}
                 self._connected = False
             self._updated_at = _now()
 

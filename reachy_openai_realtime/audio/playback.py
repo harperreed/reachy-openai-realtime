@@ -18,6 +18,43 @@ logger = logging.getLogger(__name__)
 TARGET_BUFFER_MS = 200.0
 MAX_BUFFER_MS = 500.0
 HARD_MAX_BUFFER_MS = 1000.0
+READY_BEEP_FREQUENCY_HZ = 880.0
+READY_BEEP_DURATION_MS = 160.0
+READY_BEEP_AMPLITUDE = 0.15
+
+
+def make_ready_beep(sample_rate: int) -> np.ndarray:
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
+    sample_count = round(sample_rate * READY_BEEP_DURATION_MS / 1_000.0)
+    positions = np.arange(sample_count, dtype=np.float32) / np.float32(sample_rate)
+    return (READY_BEEP_AMPLITUDE * np.sin(2.0 * np.pi * READY_BEEP_FREQUENCY_HZ * positions)).astype(
+        np.float32
+    )
+
+
+class SpeakerWriteReceipt:
+    def __init__(self) -> None:
+        self._done = threading.Event()
+        self._succeeded = False
+
+    def resolve(self, *, succeeded: bool) -> None:
+        self._succeeded = succeeded
+        self._done.set()
+
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def succeeded(self) -> bool:
+        return self._done.is_set() and self._succeeded
+
+
+@dataclass
+class _SpeakerWrite:
+    pcm: np.ndarray
+    duration_ms: float
+    received_at: float
+    receipt: SpeakerWriteReceipt | None = None
 
 
 @dataclass
@@ -110,7 +147,7 @@ class SpeakerWorker:
         on_write: Callable[[float, float], None] | None = None,
     ) -> None:
         self._media = media
-        self._inbox: queue.Queue[tuple[np.ndarray, float, float]] = queue.Queue(maxsize=inbox_max)
+        self._inbox: queue.Queue[_SpeakerWrite] = queue.Queue(maxsize=inbox_max)
         self._on_write = on_write
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -128,10 +165,25 @@ class SpeakerWorker:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        self.flush()
 
     def submit(self, pcm: np.ndarray, duration_ms: float, received_at: float, timeout_seconds: float) -> bool:
+        return self._submit(_SpeakerWrite(pcm, duration_ms, received_at), timeout_seconds)
+
+    def submit_tracked(
+        self,
+        pcm: np.ndarray,
+        duration_ms: float,
+        received_at: float,
+        timeout_seconds: float,
+    ) -> SpeakerWriteReceipt | None:
+        receipt = SpeakerWriteReceipt()
+        write = _SpeakerWrite(pcm, duration_ms, received_at, receipt)
+        return receipt if self._submit(write, timeout_seconds) else None
+
+    def _submit(self, write: _SpeakerWrite, timeout_seconds: float) -> bool:
         try:
-            self._inbox.put((pcm, duration_ms, received_at), timeout=timeout_seconds)
+            self._inbox.put(write, timeout=timeout_seconds)
             return True
         except queue.Full:
             return False
@@ -139,9 +191,11 @@ class SpeakerWorker:
     def flush(self) -> None:
         while True:
             try:
-                self._inbox.get_nowait()
+                write = self._inbox.get_nowait()
             except queue.Empty:
                 return
+            if write.receipt is not None:
+                write.receipt.resolve(succeeded=False)
 
     def alive(self) -> bool:
         thread = self._thread
@@ -153,18 +207,22 @@ class SpeakerWorker:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                pcm, duration_ms, received_at = self._inbox.get(timeout=0.25)
+                write = self._inbox.get(timeout=0.25)
             except queue.Empty:
                 continue
             try:
-                self._media.push_audio_sample(pcm)
+                self._media.push_audio_sample(write.pcm)
             except Exception:
                 logger.exception("speaker write failed")
+                if write.receipt is not None:
+                    write.receipt.resolve(succeeded=False)
                 continue
             self.last_write_at = time.monotonic()
             self.frames_total += 1
+            if write.receipt is not None:
+                write.receipt.resolve(succeeded=True)
             if self._on_write is not None:
                 try:
-                    self._on_write(duration_ms, received_at)
+                    self._on_write(write.duration_ms, write.received_at)
                 except Exception:
                     logger.exception("on_write callback failed")
