@@ -59,6 +59,18 @@ def test_on_transition_callback_fires_with_from_to_reason():
     assert seen == [(PresenceState.BOOTING, PresenceState.SLEEPING, "boot")]
 
 
+def test_deferred_transition_changes_state_before_notifying_observer() -> None:
+    seen: list[tuple] = []
+    fsm = PresenceStateMachine(on_transition=lambda old, new, reason: seen.append((old, new, reason)))
+
+    notify = fsm.transition_deferred(PresenceState.SLEEPING, reason="boot")
+
+    assert fsm.state is PresenceState.SLEEPING
+    assert seen == []
+    notify()
+    assert seen == [(PresenceState.BOOTING, PresenceState.SLEEPING, "boot")]
+
+
 def test_error_recovers_via_waking():
     fsm = PresenceStateMachine()
     fsm.transition(PresenceState.SLEEPING, reason="boot")
@@ -841,6 +853,56 @@ def test_deadline_wins_when_ready_callback_arrives_at_deadline() -> None:
     assert not any(event == "wake.session_ready" for event, _fields in status.events)
     assert status.events.count(("wake.connection_failed", {"stage": "deadline"})) == 1
     assert motion.calls.count("fail") == 1
+
+
+def test_session_finalization_and_manual_sleep_have_one_atomic_winner() -> None:
+    failure_started = threading.Event()
+    release_failure = threading.Event()
+
+    class BlockingFailureStatus(FakeStatus):
+        def record_event(self, event, **fields):
+            if event == "wake.connection_failed":
+                failure_started.set()
+                assert release_failure.wait(timeout=1.0)
+            super().record_event(event, **fields)
+
+    class FailedStartupSession:
+        startup_failure_stage = "connection"
+
+        async def run(self, stop_event):
+            return SessionOutcome.STOPPED
+
+    status = BlockingFailureStatus()
+    motion = FakeMotion()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=motion,
+        session_factory=lambda **_kwargs: FailedStartupSession(),
+        status=status,
+    )
+    manager._app_stop = threading.Event()
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+    pending = manager._pending
+    assert pending is not None
+
+    session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
+    session_thread.start()
+    assert failure_started.wait(timeout=1.0)
+    sleep_result = manager.request_sleep()
+    release_failure.set()
+    session_thread.join(timeout=1.0)
+
+    assert not session_thread.is_alive()
+    failure_count = sum(event == "wake.connection_failed" for event, _fields in status.events)
+    assert not (sleep_result["ok"] is True and failure_count > 0)
+    if sleep_result["ok"] is True:
+        assert failure_count == 0
+    else:
+        assert sleep_result == {"ok": False, "state": "sleeping", "reason": "not_awake"}
+        assert failure_count == 1
+        assert motion.calls.count("fail") == 1
 
 
 def test_session_exception_leaves_wake_unlatched():

@@ -214,6 +214,20 @@ def test_sleeping_presence_clears_stale_connected_status():
     assert status.health()["realtime"] is False
 
 
+def test_waking_to_sleeping_presence_sets_sleeping_phase_and_translated_detail() -> None:
+    from reachy_openai_realtime.presence.states import PresenceState
+
+    status = RuntimeStatus()
+    status.set_presence(PresenceState.SLEEPING, PresenceState.WAKING, "wake_word")
+    status.set_presence(PresenceState.WAKING, PresenceState.SLEEPING, "session_ended")
+
+    snapshot = status.snapshot()
+    assert snapshot["presence"] == "sleeping"
+    assert snapshot["phase"] == "sleeping"
+    assert snapshot["connected"] is False
+    assert snapshot["detail_key"] == "presence_sleeping"
+
+
 def test_presence_defaults_to_none_before_any_transition():
     assert RuntimeStatus().snapshot()["presence"] is None
 

@@ -45,6 +45,19 @@ class PresenceStateMachine:
             return self._state
 
     def transition(self, new_state: PresenceState, *, reason: str) -> None:
+        self.transition_deferred(new_state, reason=reason)()
+
+    def transition_deferred(
+        self,
+        new_state: PresenceState,
+        *,
+        reason: str,
+    ) -> Callable[[], None]:
+        """Apply a transition now and return its observer notification.
+
+        Presence lifecycle code uses this to commit related state atomically,
+        then notify recorders after releasing its outer lifecycle lock.
+        """
         with self._lock:
             old_state = self._state
             if new_state is not old_state and new_state not in _LEGAL_TRANSITIONS.get(
@@ -54,5 +67,10 @@ class PresenceStateMachine:
                     f"illegal presence transition {old_state.name} -> {new_state.name} ({reason})"
                 )
             self._state = new_state
-        if self._on_transition is not None:
-            self._on_transition(old_state, new_state, reason)
+        callback = self._on_transition
+
+        def notify() -> None:
+            if callback is not None:
+                callback(old_state, new_state, reason)
+
+        return notify

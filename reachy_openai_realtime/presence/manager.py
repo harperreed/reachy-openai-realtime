@@ -59,6 +59,60 @@ class _EitherStop:
         return True
 
 
+class _WakeStartupStop:
+    """Wake-session stop signal that makes the startup deadline authoritative."""
+
+    def __init__(
+        self,
+        primary: Any,
+        secondary: threading.Event,
+        *,
+        lifecycle_lock: Any,
+        startup_resolved: threading.Event,
+        deadline_expired: threading.Event,
+        deadline_at: float,
+        clock: Callable[[], float],
+    ) -> None:
+        self._primary = primary
+        self._secondary = secondary
+        self._lifecycle_lock = lifecycle_lock
+        self._startup_resolved = startup_resolved
+        self._deadline_expired = deadline_expired
+        self._deadline_at = deadline_at
+        self._clock = clock
+
+    def _resolve_deadline_locked(self) -> bool:
+        if self._startup_resolved.is_set() or self._clock() < self._deadline_at:
+            return False
+        self._deadline_expired.set()
+        self._startup_resolved.set()
+        return True
+
+    def resolve_deadline(self) -> bool:
+        if self._clock() < self._deadline_at:
+            return False
+        with self._lifecycle_lock:
+            deadline_won = self._resolve_deadline_locked()
+        if deadline_won:
+            self._secondary.set()
+        return deadline_won
+
+    def is_set(self) -> bool:
+        self.resolve_deadline()
+        return self._primary.is_set() or self._secondary.is_set()
+
+    def set(self) -> None:
+        self._secondary.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+        return True
+
+
 class WakeAudioAssembler:
     """Collects the wake pre-roll: the short slice of history just before the
     detection timestamp (spec §17/§18). Returns RAW ``AudioFrame``s — the
@@ -344,6 +398,15 @@ class PresenceManager:
         startup_resolved = threading.Event()
         deadline_expired = threading.Event()
         deadline_at = self._clock() + self._connect_timeout_seconds
+        combined = _WakeStartupStop(
+            self._app_stop,
+            session_stop,
+            lifecycle_lock=self._lock,
+            startup_resolved=startup_resolved,
+            deadline_expired=deadline_expired,
+            deadline_at=deadline_at,
+            clock=self._clock,
+        )
 
         def _on_session_ready() -> None:
             accepted = False
@@ -357,9 +420,7 @@ class PresenceManager:
                     or pending.cancel_reason == "manual_sleep"
                 ):
                     startup_resolved.set()
-                elif self._clock() >= deadline_at:
-                    deadline_expired.set()
-                    startup_resolved.set()
+                elif combined._resolve_deadline_locked():
                     deadline_won = True
                 elif self._states.state is PresenceState.WAKING:
                     startup_resolved.set()
@@ -381,19 +442,11 @@ class PresenceManager:
             remaining = max(0.0, deadline_at - self._clock())
             if startup_resolved.wait(remaining):
                 return
-            deadline_won = False
-            with self._lock:
-                if not startup_resolved.is_set():
-                    startup_resolved.set()
-                    deadline_won = True
-                    deadline_expired.set()
-            if deadline_won:
-                session_stop.set()
+            combined.resolve_deadline()
 
         watchdog = threading.Thread(target=_watch_deadline, name="wake-connect-deadline", daemon=True)
         watchdog.start()
 
-        combined = _EitherStop(self._app_stop, session_stop)
         self._status.record_event("wake.connection_start")
         outcome = SessionOutcome.STOPPED
         try:
@@ -402,14 +455,9 @@ class PresenceManager:
             logger.exception("wake session crashed")
             self._status.record_error(f"wake session crashed: {error}")
         finally:
+            combined.resolve_deadline()
             with self._lock:
                 if not startup_resolved.is_set():
-                    if (
-                        not self._app_stop.is_set()
-                        and pending.cancel_reason != "manual_sleep"
-                        and self._clock() >= deadline_at
-                    ):
-                        deadline_expired.set()
                     startup_resolved.set()
             session_stop.set()
             watchdog.join(timeout=1.0)
@@ -419,35 +467,46 @@ class PresenceManager:
                 if deadline_expired.is_set()
                 else getattr(session, "startup_failure_stage", None)
             )
+            app_stopping = self._app_stop.is_set()
+            notify_sleep: Callable[[], None] | None = None
             with self._lock:
                 if latched:
                     self._wake_latch = (True, "noise_bail")
                 cancel_reason = pending.cancel_reason
+                state = self._states.state
+                startup_failed = (
+                    state is PresenceState.WAKING
+                    and not app_stopping
+                    and cancel_reason != "manual_sleep"
+                )
+                if state in (PresenceState.AWAKE, PresenceState.WAKING):
+                    notify_sleep = self._states.transition_deferred(
+                        PresenceState.SLEEPING,
+                        reason="session_ended",
+                    )
                 self._pending = None
                 self._session_stop = None
             if latched:
                 self._status.set_wake_latch(True, "noise_bail")
                 self._status.record_event("presence.noise_bail_latched", reason="noise_bail")
+            if notify_sleep is not None:
+                notify_sleep()
             self._finish_session(
-                app_stopping=self._app_stop.is_set(),
+                app_stopping=app_stopping,
+                startup_failed=startup_failed,
                 failure_stage=failure_stage,
-                cancel_reason=cancel_reason,
             )
 
     def _finish_session(
         self,
         *,
         app_stopping: bool,
+        startup_failed: bool,
         failure_stage: str | None,
-        cancel_reason: str | None,
     ) -> None:
-        state = self._states.state
-        # Still WAKING ⇒ the session never reached AWAKE: the connect failed (spec §20).
-        if state is PresenceState.WAKING and not app_stopping and cancel_reason != "manual_sleep":
+        if startup_failed:
             self._status.record_event("wake.connection_failed", stage=failure_stage or "startup")
             if self._wake_motion_enabled:
                 self._motion.connection_failed_motion()
-        if state in (PresenceState.AWAKE, PresenceState.WAKING):
-            self._states.transition(PresenceState.SLEEPING, reason="session_ended")
         if not app_stopping:
             self._motion.sleeping_pose()

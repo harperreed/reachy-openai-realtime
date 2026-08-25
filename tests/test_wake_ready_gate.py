@@ -17,6 +17,8 @@ from reachy_openai_realtime.audio.capture import CaptureWorker
 from reachy_openai_realtime.audio.fanout import AudioFrame, AudioSubscription
 from reachy_openai_realtime.audio.playback import SpeakerWorker
 from reachy_openai_realtime.config import AppConfig
+from reachy_openai_realtime.presence.manager import PresenceManager
+from reachy_openai_realtime.presence.states import PresenceState
 from reachy_openai_realtime.realtime import RealtimeRobotSession
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.fsm import SessionState
@@ -350,6 +352,110 @@ def test_ready_beep_opens_gate_before_ready_callback(monkeypatch) -> None:
     assert session.input_ready is True
     assert session.fsm.state is SessionState.LISTENING
     assert callback_gate_values == [True]
+
+
+def test_presence_deadline_stops_real_readiness_loop_before_gate_opens(monkeypatch) -> None:
+    class PresenceGateMotion(GateMotion):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def wake_acknowledge(self) -> None:
+            self.calls.append("wake")
+
+        def connection_failed_motion(self) -> None:
+            self.calls.append("fail")
+
+        def sleeping_pose(self) -> None:
+            self.calls.append("sleep")
+
+    now = [100.0]
+    callback_count = 0
+    media = GateMedia()
+    motion = PresenceGateMotion()
+    status = RuntimeStatus()
+    recorder = FakeRecorder()
+    status.attach_recorder(recorder)
+    session_holder: list[RealtimeRobotSession] = []
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-wake-ready-deadline")
+    monkeypatch.setattr(realtime_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    def session_factory(*, wake_session, on_session_ready=None):
+        nonlocal callback_count
+        assert wake_session is True
+
+        def counted_ready() -> None:
+            nonlocal callback_count
+            callback_count += 1
+            assert on_session_ready is not None
+            on_session_ready()
+
+        session = RealtimeRobotSession(
+            robot=SimpleNamespace(media=media),
+            motion=motion,
+            config=AppConfig(),
+            status=status,
+            capture=SimpleNamespace(frame_age_seconds=lambda: 0.0),
+            wake_session=True,
+            on_session_ready=counted_ready,
+        )
+        session.connection_epoch = 1
+        session.fsm.transition(SessionState.CONNECTING, reason="test")
+        session.fsm.transition(SessionState.INITIALIZING, reason="test")
+        session._speaker.start()
+
+        async def advance_to_deadline(_stop_event, _seconds: float) -> None:
+            now[0] = 100.0 + startup_timeout
+
+        async def run_readiness(stop_event) -> SessionOutcome:
+            configured = asyncio.Event()
+            configured.set()
+            session._sleep_unless_stopped = advance_to_deadline  # type: ignore[method-assign]
+            await session._wake_readiness_loop(stop_event, configured, 1)
+            return SessionOutcome.STOPPED
+
+        session.run = run_readiness  # type: ignore[method-assign]
+        session_holder.append(session)
+        return session
+
+    startup_timeout = (
+        realtime_mod.READY_BEEP_DURATION_MS / 1_000.0
+        + realtime_mod.READY_BEEP_OUTPUT_GUARD_SECONDS
+    )
+    manager = PresenceManager(
+        capture=SimpleNamespace(),
+        detector=None,
+        motion=motion,
+        session_factory=session_factory,
+        status=status,
+        connect_timeout_seconds=startup_timeout,
+        clock=lambda: now[0],
+    )
+    manager._app_stop = threading.Event()
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+    pending = manager._pending
+    assert pending is not None
+
+    try:
+        manager._run_session(pending)
+    finally:
+        if session_holder:
+            session_holder[0]._speaker.close()
+
+    session = session_holder[0]
+    names = [name for name, _fields in recorder.events]
+    assert session.input_ready is False
+    assert "wake.input_gate_opened" not in names
+    assert "wake.session_ready" not in names
+    assert callback_count == 0
+    assert manager.state is PresenceState.SLEEPING
+    assert not any(
+        name == "presence.transition" and fields.get("to_state") == "awake"
+        for name, fields in recorder.events
+    )
+    assert recorder.events.count(("wake.connection_failed", {"stage": "deadline"})) == 1
+    assert motion.calls.count("fail") == 1
 
 
 def test_ready_beep_guard_starts_after_slow_generation(monkeypatch) -> None:
