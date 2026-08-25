@@ -411,7 +411,7 @@ def test_app_loop_wake_enabled_runs_presence_manager(tmp_path, monkeypatch) -> N
     assert built.get("ran") is True, "PresenceManager.run() was not called"
     assert built["kwargs"]["detector"] is None
     assert built["kwargs"]["capture"] is not None
-    accept_session_ready = lambda: True
+    accept_session_ready = lambda open_gate: True
     on_session_ready = lambda: None
     session = built["kwargs"]["session_factory"](
         wake_session=True,

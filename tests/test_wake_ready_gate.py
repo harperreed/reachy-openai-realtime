@@ -386,9 +386,13 @@ def test_ready_beep_opens_gate_before_ready_callback(monkeypatch) -> None:
     acceptance_gate_values: list[bool] = []
     callback_gate_values: list[bool] = []
     session = make_gate_session(monkeypatch, media)
-    session._accept_session_ready = lambda: (
-        acceptance_gate_values.append(session.input_ready) or True
-    )
+
+    def accept_session_ready(open_gate) -> bool:
+        acceptance_gate_values.append(session.input_ready)
+        open_gate()
+        return True
+
+    session._accept_session_ready = accept_session_ready
     session._on_session_ready = lambda: callback_gate_values.append(session.input_ready)
     recorder = FakeRecorder()
     session.status.attach_recorder(recorder)
@@ -461,16 +465,19 @@ def test_presence_acceptance_linearizes_manual_cancel(
     ):
         assert wake_session is True
 
-        def gated_acceptance() -> bool:
+        def gated_acceptance(open_gate) -> bool:
             assert accept_session_ready is not None
             if cancel_before_acceptance:
                 acceptance_poised.set()
                 assert release_acceptance.wait(timeout=1.0)
-                return accept_session_ready()
-            accepted = accept_session_ready()
-            acceptance_poised.set()
-            assert release_acceptance.wait(timeout=1.0)
-            return accepted
+                return accept_session_ready(open_gate)
+
+            def gated_open() -> None:
+                acceptance_poised.set()
+                assert release_acceptance.wait(timeout=1.0)
+                open_gate()
+
+            return accept_session_ready(gated_open)
 
         def counted_ready() -> None:
             session = session_holder[0]
@@ -540,18 +547,32 @@ def test_presence_acceptance_linearizes_manual_cancel(
 
     session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
     session_thread.start()
-    sleep_result: dict[str, object] | None = None
+    sleep_results: list[dict[str, object]] = []
+    sleep_started = threading.Event()
+    sleep_returned = threading.Event()
+
+    def request_sleep() -> None:
+        sleep_started.set()
+        sleep_results.append(manager.request_sleep())
+        sleep_returned.set()
+
+    sleep_thread = threading.Thread(target=request_sleep, daemon=True)
     try:
         assert acceptance_poised.wait(timeout=1.0)
-        sleep_result = manager.request_sleep()
+        sleep_thread.start()
+        assert sleep_started.wait(timeout=1.0)
+        if cancel_before_acceptance:
+            assert sleep_returned.wait(timeout=1.0)
     finally:
         release_acceptance.set()
+        sleep_thread.join(timeout=1.0)
         session_thread.join(timeout=1.0)
         if session_holder:
             session_holder[0]._speaker.close()
 
+    assert not sleep_thread.is_alive()
     assert not session_thread.is_alive()
-    assert sleep_result == {"ok": True, "state": "sleeping"}
+    assert sleep_results == [{"ok": True, "state": "sleeping"}]
     session = session_holder[0]
     names = [name for name, _fields in recorder.events]
     assert ("wake.input_gate_opened" in names) is gate_opens

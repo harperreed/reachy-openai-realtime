@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 
 from reachy_openai_realtime.audio.fanout import AudioFrame, AudioSubscription
-from reachy_openai_realtime.presence.manager import PresenceManager, WakeAudioAssembler, _EitherStop
+from reachy_openai_realtime.presence.manager import (
+    PresenceManager,
+    WakeAudioAssembler,
+    _EitherStop,
+    _WakeStartupStop,
+)
 from reachy_openai_realtime.presence.states import PresenceState, PresenceStateMachine
 from reachy_openai_realtime.runtime_status import RuntimeStatus
 from reachy_openai_realtime.session.recovery import SessionOutcome
@@ -76,6 +81,34 @@ def test_either_stop_set_targets_session_event_only() -> None:
     assert combined.is_set() is True
     assert session_stop.is_set() is True
     assert app_stop.is_set() is False
+
+
+def test_resolved_wake_deadline_does_not_reacquire_lifecycle_lock() -> None:
+    class RejectingLock:
+        entered = False
+
+        def __enter__(self):
+            self.entered = True
+            raise AssertionError("resolved startup must not reacquire lifecycle lock")
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            pass
+
+    startup_resolved = threading.Event()
+    startup_resolved.set()
+    lifecycle_lock = RejectingLock()
+    combined = _WakeStartupStop(
+        threading.Event(),
+        threading.Event(),
+        lifecycle_lock=lifecycle_lock,
+        startup_resolved=startup_resolved,
+        deadline_expired=threading.Event(),
+        deadline_at=10.0,
+        clock=lambda: 11.0,
+    )
+
+    assert combined.resolve_deadline() is False
+    assert lifecycle_lock.entered is False
 
 
 # --- PresenceManager + WakeAudioAssembler (Task 11) ---
@@ -197,7 +230,10 @@ class FakeSession:
 
     async def run(self, stop_event):
         self.ran = True
-        accepted = self._accept_session_ready is None or self._accept_session_ready()
+        accepted = (
+            self._accept_session_ready is None
+            or self._accept_session_ready(lambda: None)
+        )
         if accepted and self._on_session_ready is not None:
             self._on_session_ready()
         if self.outcome is SessionOutcome.NOISE_BAIL:
@@ -251,7 +287,10 @@ class GatedNoiseBailSession:
         self._return_gate = return_gate
 
     async def run(self, stop_event):
-        accepted = self._accept_session_ready is None or self._accept_session_ready()
+        accepted = (
+            self._accept_session_ready is None
+            or self._accept_session_ready(lambda: None)
+        )
         if accepted and self._on_session_ready is not None:
             self._on_session_ready()
         if self._return_gate is not None:
@@ -743,6 +782,108 @@ def test_manual_sleep_cancels_session_while_waking() -> None:
     assert not any(event == "wake.connection_failed" for event, _fields in status.events)
 
 
+def test_gate_opener_holds_lifecycle_lock_against_manual_sleep() -> None:
+    opener_started = threading.Event()
+    release_opener = threading.Event()
+    sleep_probe_done = threading.Event()
+    sleep_blocked = threading.Event()
+    sleep_acquired = threading.Event()
+    order: list[str] = []
+
+    class ProbeLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread().name == "sleep-during-gate-open":
+                if self._lock.acquire(blocking=False):
+                    sleep_acquired.set()
+                else:
+                    sleep_blocked.set()
+                    sleep_probe_done.set()
+                    self._lock.acquire()
+                sleep_probe_done.set()
+            else:
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            self._lock.release()
+
+    class GateOpeningSession:
+        startup_failure_stage = None
+
+        def __init__(self, *, accept_session_ready, on_session_ready) -> None:
+            self._accept_session_ready = accept_session_ready
+            self._on_session_ready = on_session_ready
+
+        async def run(self, stop_event):
+            def open_gate() -> None:
+                order.append("gate_started")
+                opener_started.set()
+                assert release_opener.wait(timeout=1.0)
+                order.append("gate_opened")
+
+            if self._accept_session_ready(open_gate):
+                self._on_session_ready()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.01)
+            return SessionOutcome.STOPPED
+
+    status = FakeStatus()
+    manager = PresenceManager(
+        capture=FakeCapture(),
+        detector=FakeDetector(fire_after=10_000),
+        motion=FakeMotion(),
+        session_factory=lambda **kwargs: GateOpeningSession(
+            accept_session_ready=kwargs["accept_session_ready"],
+            on_session_ready=kwargs["on_session_ready"],
+        ),
+        status=status,
+    )
+    manager._lock = ProbeLock()
+    manager._app_stop = threading.Event()
+    manager._states.transition(PresenceState.SLEEPING, reason="boot_complete")
+    assert manager.request_wake()["ok"] is True
+    pending = manager._pending
+    assert pending is not None
+
+    session_thread = threading.Thread(target=manager._run_session, args=(pending,), daemon=True)
+    session_thread.start()
+    assert opener_started.wait(timeout=1.0)
+
+    sleep_results: list[dict[str, object]] = []
+
+    def request_sleep() -> None:
+        sleep_results.append(manager.request_sleep())
+        order.append("sleep_returned")
+
+    sleep_thread = threading.Thread(
+        target=request_sleep,
+        name="sleep-during-gate-open",
+        daemon=True,
+    )
+    sleep_thread.start()
+    assert sleep_probe_done.wait(timeout=1.0)
+    try:
+        assert sleep_blocked.is_set() is True
+        assert sleep_acquired.is_set() is False
+    finally:
+        release_opener.set()
+        sleep_thread.join(timeout=1.0)
+        session_thread.join(timeout=1.0)
+
+    assert not sleep_thread.is_alive()
+    assert not session_thread.is_alive()
+    assert sleep_results == [{"ok": True, "state": "sleeping"}]
+    assert order == ["gate_started", "gate_opened", "sleep_returned"]
+    assert any(
+        event == "presence.transition" and fields.get("to_state") == "awake"
+        for event, fields in status.events
+    )
+    assert manager.state is PresenceState.SLEEPING
+
+
 def test_ready_callback_cannot_publish_awake_after_manual_cancel_starts() -> None:
     started = threading.Event()
     release_ready = threading.Event()
@@ -775,7 +916,7 @@ def test_ready_callback_cannot_publish_awake_after_manual_cancel_starts() -> Non
             started.set()
             await asyncio.to_thread(release_ready.wait)
             acceptance_started.set()
-            if self._accept_session_ready():
+            if self._accept_session_ready(lambda: None):
                 self._on_session_ready()
             ready_returned.set()
             while not stop_event.is_set():
@@ -843,7 +984,7 @@ def test_ready_callback_rejects_app_stop_after_session_last_check() -> None:
             assert stop_event.is_set() is False
             started.set()
             await asyncio.to_thread(release_ready.wait)
-            if self._accept_session_ready():
+            if self._accept_session_ready(lambda: None):
                 self._on_session_ready()
             return SessionOutcome.STOPPED
 
@@ -900,7 +1041,7 @@ def test_deadline_wins_when_ready_callback_arrives_at_deadline() -> None:
             assert stop_event.is_set() is False
             callback_poised.set()
             await asyncio.to_thread(release_ready.wait)
-            if self._accept_session_ready():
+            if self._accept_session_ready(lambda: None):
                 self._on_session_ready()
             return SessionOutcome.STOPPED
 

@@ -89,7 +89,7 @@ class _WakeStartupStop:
         return True
 
     def resolve_deadline(self) -> bool:
-        if self._clock() < self._deadline_at:
+        if self._startup_resolved.is_set() or self._clock() < self._deadline_at:
             return False
         with self._lifecycle_lock:
             deadline_won = self._resolve_deadline_locked()
@@ -410,7 +410,7 @@ class PresenceManager:
             clock=self._clock,
         )
 
-        def _accept_session_ready() -> bool:
+        def _accept_session_ready(open_gate: Callable[[], None]) -> bool:
             accepted = False
             should_stop = False
             with self._lock:
@@ -426,6 +426,7 @@ class PresenceManager:
                 elif combined._resolve_deadline_locked():
                     should_stop = True
                 elif self._states.state is PresenceState.WAKING:
+                    open_gate()
                     ready_accepted.set()
                     startup_resolved.set()
                     accepted = True

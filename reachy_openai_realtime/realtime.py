@@ -154,7 +154,7 @@ class RealtimeRobotSession:
         memory: MemoryManager | None = None,
         nap: NapConsolidator | None = None,
         wake_session: bool = False,
-        accept_session_ready: Callable[[], bool] | None = None,
+        accept_session_ready: Callable[[Callable[[], None]], bool] | None = None,
         on_session_ready: Callable[[], None] | None = None,
     ) -> None:
         self.robot = robot
@@ -1042,23 +1042,28 @@ class RealtimeRobotSession:
         await self._sleep_unless_stopped(stop_event, max(0.0, ready_at - time.monotonic()))
         if stop_event.is_set() or epoch != self.connection_epoch:
             return
-        if self._accept_session_ready is not None and not self._accept_session_ready():
+        def open_gate() -> None:
+            self._vad.reset_turn()
+            gate_opened_at = time.monotonic()
+            self._input_ready_at = gate_opened_at
+            dropped_by_subscription = self._audio.dropped_frames if self._audio is not None else 0
+            session_started_at = self._session_started_at or started_at
+            self.status.record_event(
+                "wake.ready_beep_completed",
+                startup_duration_seconds=round(gate_opened_at - session_started_at, 3),
+                discarded_frames=self._discarded_wake_frames + dropped_by_subscription,
+            )
+            self.status.record_event("wake.input_gate_opened", epoch=epoch)
+            self._enter_listening(reason="wake_ready", notify_session_ready=False)
+
+        if self._accept_session_ready is None:
+            open_gate()
+        elif not self._accept_session_ready(open_gate):
             return
+        if self._on_session_ready is not None:
+            self._on_session_ready()
 
-        self._vad.reset_turn()
-        gate_opened_at = time.monotonic()
-        self._input_ready_at = gate_opened_at
-        dropped_by_subscription = self._audio.dropped_frames if self._audio is not None else 0
-        session_started_at = self._session_started_at or started_at
-        self.status.record_event(
-            "wake.ready_beep_completed",
-            startup_duration_seconds=round(gate_opened_at - session_started_at, 3),
-            discarded_frames=self._discarded_wake_frames + dropped_by_subscription,
-        )
-        self.status.record_event("wake.input_gate_opened", epoch=epoch)
-        self._enter_listening(reason="wake_ready")
-
-    def _enter_listening(self, *, reason: str) -> None:
+    def _enter_listening(self, *, reason: str, notify_session_ready: bool = True) -> None:
         self.fsm.transition(SessionState.LISTENING, reason=reason)
         self.status.set_phase(
             "listening",
@@ -1068,7 +1073,7 @@ class RealtimeRobotSession:
             detail_key="detail_listening_connected",
             detail_params=self._listening_params(),
         )
-        if self._on_session_ready is not None:
+        if notify_session_ready and self._on_session_ready is not None:
             self._on_session_ready()
 
     async def _handle_session_updated(
