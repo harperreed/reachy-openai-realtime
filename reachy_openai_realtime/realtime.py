@@ -57,7 +57,13 @@ from .motion import MotionManager
 from .runtime_status import RuntimeStatus, safe_message
 from .session.circuit_breaker import SESSION_LIMIT_SECONDS, TURN_RATE_WINDOW_SECONDS, TurnRateCircuitBreaker
 from .session.fsm import SessionState, SessionStateMachine
-from .session.recovery import BackoffPolicy, ErrorClass, SessionOutcome, classify_connection_error
+from .session.recovery import (
+    BackoffPolicy,
+    ErrorClass,
+    SessionOutcome,
+    classify_connection_error,
+    classify_startup_error,
+)
 from .session.supervisor import (
     FSM_INACTIVITY_LIMIT_SECONDS,
     SUPERVISOR_POLL_SECONDS,
@@ -227,6 +233,9 @@ class RealtimeRobotSession:
         # reconnect storm. Distinct from _connected_at, which resets each socket.
         self._session_started_at: float | None = None
         self._connected_epoch: int | None = None
+        # Set once the server confirms session.updated on any attempt; the outer
+        # loop uses it to tell a broken-at-startup session from a live one (#23).
+        self.ever_connected = False
         self._speech_ended_at: float | None = None
         self._barge_in_at: float | None = None
         self._first_write_pending = False
@@ -330,6 +339,9 @@ class RealtimeRobotSession:
                 self.fsm.transition(SessionState.STOPPING, reason="wake_startup_failed")
                 self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
                 return SessionOutcome.STOPPED
+            # session.updated flips _connected_epoch; if it never matched, this attempt
+            # died during setup and the stricter startup classification applies (#23).
+            attempt_went_live = self._connected_epoch == self.connection_epoch
             self.fsm.transition(SessionState.RECOVERING, reason="connection_lost")
             await self.reset_connection_state()
             if error is not None:
@@ -338,7 +350,8 @@ class RealtimeRobotSession:
                     self.fsm.transition(SessionState.STOPPING, reason="noise_bail")
                     self.fsm.transition(SessionState.DISCONNECTED, reason="shutdown_complete")
                     return SessionOutcome.NOISE_BAIL
-                if classify_connection_error(error) is ErrorClass.FATAL_CONFIG:
+                classify = classify_connection_error if attempt_went_live else classify_startup_error
+                if classify(error) is ErrorClass.FATAL_CONFIG:
                     self.status.set_phase(
                         "error", "設定エラーが発生しました", connected=False, detail_key="detail_error"
                     )
@@ -1087,6 +1100,7 @@ class RealtimeRobotSession:
         self.watchdog.disarm("session_update")
         self.status.clear_error()
         self._connected_epoch = self.connection_epoch
+        self.ever_connected = True
         self.status.record_event("realtime.connected", epoch=self.connection_epoch)
         if self._wake_session and not self.input_ready:
             session_configured.set()

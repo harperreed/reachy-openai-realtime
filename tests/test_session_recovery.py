@@ -6,6 +6,7 @@ from reachy_openai_realtime.session.recovery import (
     BackoffPolicy,
     ErrorClass,
     classify_connection_error,
+    classify_startup_error,
 )
 
 
@@ -84,3 +85,45 @@ def test_session_cap_close_is_transient() -> None:
     # No status code must be reachable via the hierarchy
     assert not hasattr(exc, "status_code")
     assert classify_connection_error(exc) is ErrorClass.TRANSIENT
+
+
+# ---------------------------------------------------------------------------
+# Issue #23: pre-connection programming errors are fatal, not retried forever
+# ---------------------------------------------------------------------------
+
+
+def test_pre_connection_programming_errors_are_fatal() -> None:
+    """An AttributeError from a half-built stub or a TypeError from a bad call
+    repeats identically on every attempt; the ordinary TRANSIENT rule would spin
+    the reconnect loop forever at 5 s intervals."""
+    assert classify_startup_error(AttributeError("no _session_config")) is ErrorClass.FATAL_CONFIG
+    assert classify_startup_error(TypeError("bad argument")) is ErrorClass.FATAL_CONFIG
+
+
+def test_pre_connection_network_and_config_errors_keep_their_class() -> None:
+    assert classify_startup_error(ConnectionError("reset")) is ErrorClass.TRANSIENT
+    assert classify_startup_error(OSError("network down")) is ErrorClass.TRANSIENT
+    assert classify_startup_error(TimeoutError("handshake")) is ErrorClass.TRANSIENT
+    assert classify_startup_error(_StatusError(401)) is ErrorClass.FATAL_CONFIG
+    assert classify_startup_error(_StatusError(429)) is ErrorClass.TRANSIENT
+    assert classify_startup_error(_StatusError(503)) is ErrorClass.TRANSIENT
+
+
+def test_classifying_startup_errors_does_not_widen_the_connection_rule() -> None:
+    """A programming error after a healthy connection may be a one-off (a bad
+    tool argument, a transient library state); the reconnect rule stays as-is."""
+    assert classify_connection_error(AttributeError("boom")) is ErrorClass.TRANSIENT
+    assert classify_startup_error(AttributeError("boom")) is ErrorClass.FATAL_CONFIG
+
+
+def test_startup_classification_prefers_sdk_signals_over_builtin_types() -> None:
+    """An SDK error that happens to subclass a builtin must keep its HTTP verdict."""
+
+    class TypeErrorWithStatus(TypeError):
+        def __init__(self, status_code: int) -> None:
+            super().__init__(f"http {status_code}")
+            self.status_code = status_code
+
+    assert classify_startup_error(TypeErrorWithStatus(401)) is ErrorClass.FATAL_CONFIG
+    assert classify_startup_error(TypeErrorWithStatus(503)) is ErrorClass.TRANSIENT
+    assert classify_startup_error(TypeErrorWithStatus(429)) is ErrorClass.TRANSIENT

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 import pytest
@@ -440,3 +441,76 @@ def test_app_loop_wake_enabled_runs_presence_manager(tmp_path, monkeypatch) -> N
     assert session._accept_session_ready is accept_session_ready
     assert session._on_session_ready is on_session_ready
     assert app._presence is None  # cleared in the run() finally
+
+
+# ---------------------------------------------------------------------------
+# Issue #23: a deterministic programming error must not restart forever
+# ---------------------------------------------------------------------------
+
+
+def test_app_loop_parks_on_repeated_programming_error(tmp_path, monkeypatch) -> None:
+    """An AttributeError escaping session.run() repeats on every attempt. Before
+    this fix the outer loop rebuilt the session every 5 s forever (escalating to
+    30 s pauses), burning CPU with no fatal classification and no way out."""
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-programming-error")
+    monkeypatch.setenv("REACHY_OPENAI_REALTIME_WAKE_ENABLED", "0")
+    monkeypatch.setattr("reachy_openai_realtime.main.time.sleep", lambda _: None)
+
+    fake_recorder = FakeRecorder()
+    fake_recorder.close = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "reachy_openai_realtime.main.EventRecorder", lambda *_a, **_k: fake_recorder
+    )
+
+    constructions = {"count": 0}
+
+    class ProgrammingErrorSession:
+        def __init__(self, robot: Any, motion: Any, config: Any, status: Any, **kwargs: Any) -> None:
+            constructions["count"] += 1
+
+        async def run(self, stop_event_arg: Any) -> Any:
+            raise AttributeError("'NoneType' object has no attribute 'emotion_names'")
+
+    monkeypatch.setattr("reachy_openai_realtime.main.RealtimeRobotSession", ProgrammingErrorSession)
+
+    class FastStopEvent(threading.Event):
+        """Collapse every retry pause so a spinning loop shows up immediately."""
+
+        def wait(self, timeout: float | None = None) -> bool:
+            if timeout is not None:
+                timeout = min(timeout, 0.01)
+            return super().wait(timeout)
+
+    app = ReachyOpenaiRealtime()
+    stop_event = FastStopEvent()
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            app.run(FakeRobot(), stop_event)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=_run, name="programming-error-app-loop-test", daemon=True)
+    t.start()
+    try:
+        # Give the loop time to fail, classify and park instead of hammering retries.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and constructions["count"] < 2:
+            time.sleep(0.05)
+        time.sleep(0.3)  # plenty of shortened pauses: a retrying loop rebuilds here
+        assert constructions["count"] == 1, (
+            f"programming error was retried: {constructions['count']} sessions constructed"
+        )
+        assert t.is_alive(), "app.run() exited instead of parking on the fatal error"
+        assert app.runtime_status.snapshot()["phase"] == "error"
+    finally:
+        stop_event.set()
+        t.join(timeout=10.0)
+
+    assert not t.is_alive(), "app.run() did not stop after the programming error parked"
+    assert not errors, f"app.run() raised unexpectedly: {errors}"
+    assert constructions["count"] == 1
+    recorded = [event for event, _ in fake_recorder.events]
+    assert "realtime.error" in recorded, f"fatal programming error was not recorded: {recorded}"

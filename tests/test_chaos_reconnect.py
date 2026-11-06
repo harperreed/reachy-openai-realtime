@@ -256,3 +256,42 @@ def test_audio_pipeline_stalled_escalates_and_cleans_up(monkeypatch) -> None:
     assert "audio.capture.stalled" in recorded_names, (
         f"audio.capture.stalled not recorded; got {recorded_names}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #23: a setup bug inside _session_config must not reconnect forever
+# ---------------------------------------------------------------------------
+
+
+def test_session_config_attribute_error_is_fatal_after_one_attempt(monkeypatch) -> None:
+    """Reproduces the reported spin: a half-built motion stub makes
+    _session_config() raise AttributeError on every connect, so the chaos suite
+    looped at ~67% CPU. One attempt must end the session as FATAL_CONFIG.
+
+    The bug only manifests through the real _run_connection path (the socket opens,
+    session.update is attempted), so this test drives a scripted connection instead
+    of stubbing _run_connection."""
+    stop_event = threading.Event()
+    conn = ScriptedConnection([])  # idles; only connect + session.update are reached
+    session = build_session([conn], monkeypatch)
+    session._sleep_unless_stopped = _instant_sleep
+
+    def exploding_session_config():
+        raise AttributeError("'NoneType' object has no attribute 'emotion_names'")
+
+    session._session_config = exploding_session_config  # type: ignore[method-assign]
+
+    recorder = FakeRecorder()
+    session.status.attach_recorder(recorder)
+
+    outcome = asyncio.run(asyncio.wait_for(session.run(stop_event), timeout=10.0))
+    session._capture.close()
+
+    assert outcome is SessionOutcome.FATAL_CONFIG
+    assert session.connection_epoch == 1, (
+        f"setup bug was retried: {session.connection_epoch} connection attempts"
+    )
+    fatal_events = [fields for event, fields in recorder.events if event == "realtime.error"]
+    assert fatal_events, f"fatal error not recorded; got {[e for e, _ in recorder.events]}"
+    assert fatal_events[0]["fatal"] is True
+    assert session.status.snapshot()["phase"] == "error"

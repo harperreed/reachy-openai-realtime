@@ -238,3 +238,57 @@ def test_run_wall_clock_ceiling_cancels_blocked_connection_attempt(monkeypatch) 
     assert len(wall_clock_events) == 1
     assert wall_clock_events[0]["session_age_seconds"] >= 0.05
     assert wall_clock_events[0]["limit_seconds"] == 0.05
+
+
+# ---------------------------------------------------------------------------
+# Issue #23: pre-connection programming errors must not retry forever
+# ---------------------------------------------------------------------------
+
+
+def test_pre_connection_programming_error_stops_reconnecting() -> None:
+    """A deterministic AttributeError raised before session.updated repeats on
+    every attempt; the plain TRANSIENT default would spin forever."""
+    attempts: list[int] = []
+    session = make_session(AttributeError("'NoneType' object has no attribute 'emotion_names'"), attempts)
+    stop_event = threading.Event()
+
+    outcome = asyncio.run(session.run(stop_event))
+
+    assert outcome is SessionOutcome.FATAL_CONFIG
+    assert attempts == [1]
+    assert session.status.snapshot()["phase"] == "error"
+    session._capture.close()
+
+
+def test_pre_connection_type_error_is_fatal_but_network_error_is_not() -> None:
+    attempts: list[int] = []
+    session = make_session(TypeError("unexpected keyword argument"), attempts)
+    stop_event = threading.Event()
+
+    outcome = asyncio.run(session.run(stop_event))
+
+    assert outcome is SessionOutcome.FATAL_CONFIG
+    assert attempts == [1]
+    session._capture.close()
+
+
+def test_programming_error_after_a_healthy_connection_stays_transient() -> None:
+    """Once session.updated has landed the session is live; an AttributeError
+    there may be a one-off tool/library state and must keep reconnecting."""
+    attempts: list[int] = []
+    session = make_session(ConnectionError("unused"), attempts)
+    stop_event = threading.Event()
+
+    async def connected_then_failed(stop_event_arg: object) -> None:
+        attempts.append(session.connection_epoch)
+        session._connected_epoch = session.connection_epoch  # simulate session.updated
+        if len(attempts) >= 2:
+            stop_event.set()
+        raise AttributeError("one-off failure after the socket was healthy")
+
+    session._run_connection = connected_then_failed  # type: ignore[method-assign]
+    outcome = asyncio.run(session.run(stop_event))
+
+    assert outcome is SessionOutcome.STOPPED
+    assert attempts == [1, 2]
+    session._capture.close()
