@@ -30,7 +30,7 @@ from .motion import DANCES_DATASET, EMOTIONS_DATASET, MotionManager, RecordedMov
 from .observability.events import EventRecorder, RedactingFormatter
 from .realtime import RealtimeRobotSession
 from .runtime_status import RuntimeStatus
-from .session.recovery import SessionOutcome
+from .session.recovery import ErrorClass, SessionOutcome, classify_startup_error
 from .session.supervisor import ESCALATION_PAUSE_SECONDS, RestartBudget
 from .settings import (
     events_path,
@@ -46,6 +46,10 @@ from .settings import (
 from .usage import UsageTracker
 
 logger = logging.getLogger(__name__)
+
+# Pause between app-session rebuilds after a transient failure (spec §24). The
+# AudioPipelineStalled ladder uses ESCALATION_PAUSE_SECONDS instead.
+SESSION_RESTART_PAUSE_SECONDS = 5.0
 
 try:
     APP_VERSION = version("reachy_openai_realtime")
@@ -371,6 +375,28 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                 return None
             return self._reachy_mini.media.get_frame_jpeg()
 
+    def _park_until_config_changes(
+        self,
+        stop_event: threading.Event,
+        stale_config: AppConfig,
+        *,
+        poll_seconds: float = 2.0,
+    ) -> None:
+        """Hold a fatal-config app in the `error` phase until the operator edits settings.
+
+        Retrying an invalid API key or a broken session-config builder cannot
+        succeed, so ``main.run()`` parks here instead of rebuilding the session
+        forever (issue #23). Returns as soon as the key or the config changes (the
+        loop then gets one more attempt) or the app is asked to stop.
+        """
+        stale_fingerprint = (os.getenv("OPENAI_API_KEY", ""), stale_config)
+        while not stop_event.is_set():
+            load_instance_env()
+            current = (os.getenv("OPENAI_API_KEY", ""), AppConfig.from_env())
+            if current != stale_fingerprint:
+                return
+            stop_event.wait(poll_seconds)
+
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         recorder = EventRecorder(events_path())
         self.runtime_status.attach_recorder(recorder)
@@ -566,6 +592,16 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                     except Exception as exc:
                         logger.exception("Realtime session stopped with an error")
                         self.runtime_status.record_error(exc)
+                        if not getattr(session, "ever_connected", False) and (
+                            classify_startup_error(exc) is ErrorClass.FATAL_CONFIG
+                        ):
+                            # A deterministic setup bug (issue #23) fails identically on
+                            # every rebuild: park instead of restarting forever.
+                            self.runtime_status.record_event(
+                                "realtime.error", fatal=True, message=str(exc)
+                            )
+                            self._park_until_config_changes(stop_event, config)
+                            continue
                         escalate = budget.record_restart(time.monotonic())
                         if escalate:
                             self.runtime_status.record_event(
@@ -579,7 +615,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                             except Exception:
                                 logger.exception("media re-init during escalation failed")
                             stop_event.wait(ESCALATION_PAUSE_SECONDS)
-                        elif stop_event.wait(5.0):
+                        elif stop_event.wait(SESSION_RESTART_PAUSE_SECONDS):
                             break
                         self.runtime_status.set_phase(
                             "reconnecting",
@@ -590,13 +626,7 @@ class ReachyOpenaiRealtime(ReachyMiniApp):
                         )
                     else:
                         if outcome is SessionOutcome.FATAL_CONFIG:
-                            stale_fingerprint = (os.getenv("OPENAI_API_KEY", ""), config)
-                            while not stop_event.is_set():
-                                load_instance_env()
-                                current = (os.getenv("OPENAI_API_KEY", ""), AppConfig.from_env())
-                                if current != stale_fingerprint:
-                                    break
-                                stop_event.wait(2.0)
+                            self._park_until_config_changes(stop_event, config)
                         elif outcome is SessionOutcome.NOISE_BAIL:
                             self.runtime_status.set_wake_latch(True, "noise_bail")
                             self.runtime_status.set_phase(

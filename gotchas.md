@@ -26,6 +26,12 @@
   429 is TRANSIENT and is checked BEFORE the 4xx→FATAL rule. Keep that ordering.
 - Reconnect policy: infinite jittered backoff 1→30 s, reset after 60 s healthy; fatal config
   errors park in `config_error` until settings change (`main.py` fingerprint wait loop).
+- **Pre-connection `AttributeError`/`TypeError` is fatal, not transient.** An error raised before
+  `session.updated` marks the attempt live goes through `recovery.py:classify_startup_error`, which
+  treats our own wiring bugs as FATAL_CONFIG (issue #23). Previously a half-built stub in
+  `_session_config()` reconnected every 5 s forever. `main.py` applies the same rule when
+  `session.run()` itself raises before `session.ever_connected`. Keep the healthy-session path on
+  `classify_connection_error`: a one-off AttributeError after the socket is live must still retry.
 - **"Phase 2" names two different things.** Hardening-spec §29 Phase 2 = motion (issues #13–15).
   The 2026-08-18 features spec ("Reachy Phase 2 — Remaining Feature Specs") = idle/sleep, external
   brain, memory, push events (issues #16–20; the verbatim spec lives in those issues' details

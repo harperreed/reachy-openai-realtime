@@ -59,6 +59,10 @@ _FATAL_EXCEPTION_NAMES = frozenset(
     }
 )
 
+# Bugs in our own wiring, not the network: a missing attribute or a bad argument
+# raises the same way on every attempt, so retrying can never clear them.
+_PROGRAMMING_ERROR_TYPES = (AttributeError, TypeError)
+
 
 def _find_status_code(exc: BaseException) -> int | None:
     status = getattr(exc, "status_code", None)
@@ -87,5 +91,21 @@ def classify_connection_error(exc: BaseException) -> ErrorClass:
             return ErrorClass.FATAL_CONFIG
         return ErrorClass.TRANSIENT
     if type(exc).__name__ in _FATAL_EXCEPTION_NAMES:
+        return ErrorClass.FATAL_CONFIG
+    return ErrorClass.TRANSIENT
+
+
+def classify_startup_error(exc: BaseException) -> ErrorClass:
+    """Classify an error raised before the session ever became healthy (issue #23).
+
+    A deterministic programming error in our own setup code — ``AttributeError``
+    from a half-built test stub, ``TypeError`` from a wrong argument — repeats on
+    every attempt, so the ordinary infinite-backoff rule would spin forever.
+    SDK/HTTP signals still win: an error carrying a status code or a known SDK
+    name keeps its §5 classification, and everything else stays TRANSIENT.
+    """
+    if _find_status_code(exc) is not None or type(exc).__name__ in _FATAL_EXCEPTION_NAMES:
+        return classify_connection_error(exc)
+    if isinstance(exc, _PROGRAMMING_ERROR_TYPES):
         return ErrorClass.FATAL_CONFIG
     return ErrorClass.TRANSIENT
